@@ -39,10 +39,10 @@ Rationale: Milestone 8 — expose a Prometheus `/metrics` endpoint for the daemo
 ### Phase 2: Emission + wiring
 - [x] Task 40: Inject `port.Recorder` into `reconciler.New` and `NewGuard` (nil → `NopRecorder`); emit at the decision/action points in `reconciler.observe` and the guard. Update existing test constructors. (depends on 38)
 <!-- Commit checkpoint: 38-40 -->
-- [ ] Task 41: Wire `main.go` — build the recorder, serve `/metrics` on `--metrics-addr` (goroutine + graceful shutdown; bind failure non-fatal), inject the recorder into the guard and reconciler. (depends on 39, 40)
+- [x] Task 41: Wire `main.go` — build the recorder, serve `/metrics` on `--metrics-addr` (goroutine + graceful shutdown; bind failure non-fatal), inject the recorder into the guard and reconciler. (depends on 39, 40)
 
 ### Phase 3: Tests
-- [ ] Task 42: Tests — recorder counters/gauge + `Handler()` exposes expected metric names (`httptest`); `NopRecorder` safe; reconciler/guard emit the right events (fake recorder). (depends on 41)
+- [x] Task 42: Tests — recorder counters/gauge + `Handler()` exposes expected metric names (`httptest`); `NopRecorder` safe; reconciler/guard emit the right events (fake recorder). (depends on 41)
 <!-- Commit checkpoint: 41-42 -->
 
 ## Definition of Done

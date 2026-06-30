@@ -3,10 +3,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/Aleksey512/swarm-hpa/internal/adapter/metrics"
 	"github.com/Aleksey512/swarm-hpa/internal/adapter/observability"
@@ -66,10 +69,24 @@ func run() int {
 		logger.Error("failed to build metrics provider", "err", err)
 		return 1
 	}
+	recorder := observability.NewRecorder(version, logger)
 	clock := port.SystemClock{}
 	cooldown := reconciler.NewCooldown(cfg.Cooldown, clock)
-	guard := reconciler.NewGuard(swarmCtl, cooldown, cfg.DryRun, port.NopRecorder{}, logger)
-	rec := reconciler.New(swarmCtl, metricsProvider, guard, clock, cfg.HealThreshold, port.NopRecorder{}, logger)
+	guard := reconciler.NewGuard(swarmCtl, cooldown, cfg.DryRun, recorder, logger)
+	rec := reconciler.New(swarmCtl, metricsProvider, guard, clock, cfg.HealThreshold, recorder, logger)
+
+	// Serve the daemon's own /metrics endpoint. Best-effort: a serve failure is
+	// logged but never stops the reconcile loop (the daemon's core job is
+	// scaling/healing).
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", recorder.Handler())
+	metricsSrv := &http.Server{Addr: cfg.MetricsAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	go func() {
+		logger.Info("metrics endpoint listening", "addr", cfg.MetricsAddr, "path", "/metrics")
+		if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("metrics server failed", "err", err)
+		}
+	}()
 
 	// Root context cancelled on SIGINT/SIGTERM for graceful shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -78,6 +95,13 @@ func run() int {
 	if err := rec.Run(ctx, cfg.PollInterval); err != nil {
 		logger.Error("reconcile loop failed", "err", err)
 		return 1
+	}
+
+	// Stop the metrics server with a bounded grace period.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
+		logger.Error("metrics server shutdown failed", "err", err)
 	}
 
 	logger.Info("shutdown complete")
