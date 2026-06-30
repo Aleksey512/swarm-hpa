@@ -180,7 +180,7 @@ git:
   #   - /aif-review and /aif-verify do not assume a base branch exists
   #   - merge/push guidance is skipped
   # Default: auto-detected from the repository (.git presence)
-  enabled: false
+  enabled: true
 
   # Default branch for diff/review/merge targets
   # Examples: main, master, develop, trunk, 2.x
