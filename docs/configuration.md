@@ -11,7 +11,11 @@ values resolve with the precedence **flag > environment > default**.
 | Flag | Env | Default | Description |
 |------|-----|---------|-------------|
 | `--poll-interval` | `POLL_INTERVAL` | `15s` | Reconcile loop interval. Must be `> 0`. |
-| `--cooldown` | `COOLDOWN` | `3m` | Minimum interval between mutations of the **same** service. `0` disables rate-limiting. |
+| `--cooldown` | `COOLDOWN` | `3m` | Minimum interval between **heal** actions on the same service. `0` disables. |
+| `--scale-up-cooldown` | `SCALE_UP_COOLDOWN` | `3m` | Minimum interval between **scale-up** actions on the same service. `0` disables. |
+| `--scale-down-cooldown` | `SCALE_DOWN_COOLDOWN` | `3m` | Minimum interval between **scale-down** actions on the same service. `0` disables. |
+| `--max-scale-step` | `MAX_SCALE_STEP` | `0` | Maximum replicas a single scaling action may change. `0` = unlimited. |
+| `--scale-down-stabilization` | `SCALE_DOWN_STABILIZATION` | `0` | Hold a scale-down until the recommendation has stayed low for this long (max-over-window). `0` disables. |
 | `--heal-threshold` | `HEAL_THRESHOLD` | `2m` | Minimum time a task must stay `pending` before the healer force-updates the service. `0` disables the duration gate. |
 | `--dry-run` | `DRY_RUN` | `true` | Log intended mutations without applying them. **The safety default.** |
 | `--log-level` | `LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error`. |
@@ -19,7 +23,7 @@ values resolve with the precedence **flag > environment > default**.
 | `--metrics-provider` | `METRICS_PROVIDER` | `dockerstats` | Global default metric source: `dockerstats` \| `prometheus`. A service can override it per-label (see below). |
 | `--prometheus-url` | `PROMETHEUS_URL` | _(empty)_ | Prometheus base URL. Required when `--metrics-provider=prometheus`, and needed for **any** service that selects `source=prometheus`. |
 | `--prometheus-timeout` | `PROMETHEUS_TIMEOUT` | `10s` | Per-query timeout for PromQL requests. Must be `> 0`. |
-| `--metrics-addr` | `METRICS_ADDR` | `:9095` | Listen address for the daemon's own `/metrics` endpoint (reserved for a later milestone). |
+| `--metrics-addr` | `METRICS_ADDR` | `:9095` | Listen address for the daemon's own `/metrics` endpoint (see [Observability](observability.md)). |
 
 Durations use Go syntax (`15s`, `2m`, `1h30m`). The effective configuration is
 logged at startup (`msg="effective configuration"`); any credentials in
@@ -47,15 +51,43 @@ the Prometheus path.
 
 ## How decisions are made
 
-- **Scaling.** `desired = clamp(current × value / target, min, max)` (truncated to
-  an integer). A change is applied through the single guarded path, subject to
-  dry-run and cooldown; equal current/desired is a no-op.
+- **Scaling.** `desired = clamp(current × value / target, min, max)`, then
+  stabilized and step-limited (see *Preventing flapping*), then applied through
+  the single guarded path subject to dry-run and the direction's cooldown; equal
+  current/desired is a no-op.
 - **Healing.** A service is force-updated only when the full stuck-pending
   signature holds: it has placement constraints, a task has been `pending` (while
   Swarm wants it running) for at least `--heal-threshold`, **and** a node that
   satisfies the constraints is now Active+Ready (the constrained node recovered).
-- **Cooldown.** After any mutation (or any dry-run "would…" log), further actions
-  on that service are suppressed for `--cooldown`.
+- **Cooldown.** After any action (or any dry-run "would…" log), further actions on
+  that service are suppressed for the matching window: `--scale-up-cooldown`,
+  `--scale-down-cooldown`, or `--cooldown` (heal).
+
+## Preventing flapping
+
+Three independent, opt-in controls dampen rapid replica churn. All default to
+behavior-preserving values, so you enable them deliberately:
+
+- **Direction-aware cooldowns** — scale-ups and scale-downs have their own minimum
+  intervals (`--scale-up-cooldown` / `--scale-down-cooldown`), so a service can
+  react quickly to load yet shrink slowly.
+- **Step limit** — `--max-scale-step` caps how many replicas one action may change
+  (absolute count), smoothing large jumps.
+- **Scale-down stabilization** — `--scale-down-stabilization` holds a scale-down
+  until the recommendation has stayed low for the whole window: it acts on the
+  **maximum** recommendation within the window, so a brief metric dip never shrinks
+  the service. Scale-ups are unaffected and it never grows a service. This mirrors
+  the Kubernetes HPA scale-down stabilization window.
+
+A flapping-resistant starting point — react fast up, shrink slowly:
+
+```bash
+./bin/swarm-hpa \
+  --scale-up-cooldown=1m \
+  --scale-down-cooldown=5m \
+  --max-scale-step=2 \
+  --scale-down-stabilization=5m
+```
 
 ## Example: env-based configuration
 
