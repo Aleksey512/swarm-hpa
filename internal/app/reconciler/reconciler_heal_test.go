@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Aleksey512/swarm-hpa/internal/core/model"
+	"github.com/Aleksey512/swarm-hpa/internal/core/port"
 )
 
 // healFake serves reads (one constrained service, its tasks, and the cluster
@@ -33,8 +34,8 @@ func (h *healFake) ForceUpdate(context.Context, string) error {
 // threshold and dry-run setting; cooldown is disabled and metrics report no data.
 func healReconciler(hf *healFake, clk *fakeClock, threshold time.Duration, dryRun bool) *Reconciler {
 	logger := discardLogger()
-	guard := NewGuard(hf, NewCooldown(0, clk), dryRun, logger)
-	return New(hf, fakeProvider{err: model.ErrNoMetricData}, guard, clk, threshold, logger)
+	guard := NewGuard(hf, NewCooldown(0, clk), dryRun, port.NopRecorder{}, logger)
+	return New(hf, fakeProvider{err: model.ErrNoMetricData}, guard, clk, threshold, port.NopRecorder{}, logger)
 }
 
 func constrainedSvc() model.ManagedService {

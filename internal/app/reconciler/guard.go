@@ -20,15 +20,20 @@ type Guard struct {
 	swarm    port.SwarmController
 	cooldown *Cooldown
 	dryRun   bool
+	recorder port.Recorder
 	logger   *slog.Logger
 }
 
-// NewGuard constructs a Guard. A nil logger falls back to slog.Default.
-func NewGuard(swarm port.SwarmController, cooldown *Cooldown, dryRun bool, logger *slog.Logger) *Guard {
+// NewGuard constructs a Guard. A nil recorder falls back to a no-op and a nil
+// logger to slog.Default.
+func NewGuard(swarm port.SwarmController, cooldown *Cooldown, dryRun bool, recorder port.Recorder, logger *slog.Logger) *Guard {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Guard{swarm: swarm, cooldown: cooldown, dryRun: dryRun, logger: logger}
+	if recorder == nil {
+		recorder = port.NopRecorder{}
+	}
+	return &Guard{swarm: swarm, cooldown: cooldown, dryRun: dryRun, recorder: recorder, logger: logger}
 }
 
 // Scale moves a replicated service toward `desired`, gated by dry-run + cooldown.
@@ -44,19 +49,23 @@ func (g *Guard) Scale(ctx context.Context, svc model.ManagedService, desired uin
 		return nil
 	case !g.cooldown.Allowed(id):
 		g.logger.Info("scale suppressed by cooldown", "service", name)
+		g.recorder.ActionSuppressed("scale", "cooldown")
 		return nil
 	}
 
 	if g.dryRun {
 		g.logger.Info("dry-run: would scale", "service", name, "from", svc.Replicas, "to", desired)
 		g.cooldown.Record(id)
+		g.recorder.ActionSuppressed("scale", "dry_run")
 		return nil
 	}
 
 	if err := g.swarm.Scale(ctx, id, desired); err != nil {
+		g.recorder.Error("scale")
 		return fmt.Errorf("scale %s: %w", name, err)
 	}
 	g.cooldown.Record(id)
+	g.recorder.ScaleApplied(name)
 	g.logger.Info("scaled", "service", name, "from", svc.Replicas, "to", desired)
 	return nil
 }
@@ -66,19 +75,23 @@ func (g *Guard) Heal(ctx context.Context, svc model.ManagedService) error {
 	id, name := svc.Ref.ID, svc.Ref.Name
 	if !g.cooldown.Allowed(id) {
 		g.logger.Info("heal suppressed by cooldown", "service", name)
+		g.recorder.ActionSuppressed("heal", "cooldown")
 		return nil
 	}
 
 	if g.dryRun {
 		g.logger.Info("dry-run: would force-update (heal)", "service", name)
 		g.cooldown.Record(id)
+		g.recorder.ActionSuppressed("heal", "dry_run")
 		return nil
 	}
 
 	if err := g.swarm.ForceUpdate(ctx, id); err != nil {
+		g.recorder.Error("heal")
 		return fmt.Errorf("heal %s: %w", name, err)
 	}
 	g.cooldown.Record(id)
+	g.recorder.HealApplied(name)
 	g.logger.Info("healed (forced reschedule)", "service", name)
 	return nil
 }

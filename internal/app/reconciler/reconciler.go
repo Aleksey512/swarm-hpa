@@ -21,18 +21,23 @@ type Reconciler struct {
 	guard         *Guard
 	clock         port.Clock
 	healThreshold time.Duration
+	recorder      port.Recorder
 	logger        *slog.Logger
 }
 
 // New constructs a Reconciler. healThreshold is the minimum time a task must be
-// pending before the healer treats the service as stuck. A nil logger falls back
-// to slog.Default and a nil clock to the system clock.
-func New(swarm port.SwarmController, metrics port.MetricsProvider, guard *Guard, clock port.Clock, healThreshold time.Duration, logger *slog.Logger) *Reconciler {
+// pending before the healer treats the service as stuck. A nil recorder falls
+// back to a no-op, a nil logger to slog.Default, and a nil clock to the system
+// clock.
+func New(swarm port.SwarmController, metrics port.MetricsProvider, guard *Guard, clock port.Clock, healThreshold time.Duration, recorder port.Recorder, logger *slog.Logger) *Reconciler {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if clock == nil {
 		clock = port.SystemClock{}
+	}
+	if recorder == nil {
+		recorder = port.NopRecorder{}
 	}
 	return &Reconciler{
 		swarm:         swarm,
@@ -40,6 +45,7 @@ func New(swarm port.SwarmController, metrics port.MetricsProvider, guard *Guard,
 		guard:         guard,
 		clock:         clock,
 		healThreshold: healThreshold,
+		recorder:      recorder,
 		logger:        logger,
 	}
 }
@@ -72,12 +78,16 @@ func (r *Reconciler) Run(ctx context.Context, interval time.Duration) error {
 // dry-run enabled (the default), Heal only logs the intended action. Errors are
 // logged and swallowed so the loop survives transient API failures.
 func (r *Reconciler) observe(ctx context.Context) {
+	defer r.recorder.ReconcileTick()
+
 	services, err := r.swarm.ManagedServices(ctx)
 	if err != nil {
 		r.logger.Error("observe: listing managed services failed", "err", err)
+		r.recorder.Error("services")
 		return
 	}
 	r.logger.Info("observed managed services", "count", len(services))
+	r.recorder.ObservedServices(len(services))
 
 	// List nodes once per tick: healer.Detect needs them to check whether a
 	// constraint-satisfying node has recovered. On error we conservatively
@@ -86,6 +96,7 @@ func (r *Reconciler) observe(ctx context.Context) {
 	nodes, err := r.swarm.Nodes(ctx)
 	if err != nil {
 		r.logger.Error("observe: listing nodes failed; healing disabled this tick", "err", err)
+		r.recorder.Error("nodes")
 		nodes = nil
 	}
 	now := r.clock.Now()
@@ -95,6 +106,7 @@ func (r *Reconciler) observe(ctx context.Context) {
 		tasks, err := r.swarm.Tasks(ctx, svc.Ref.ID)
 		if err != nil {
 			r.logger.Error("observe: listing tasks failed", "service", svc.Ref.Name, "err", err)
+			r.recorder.Error("tasks")
 			continue
 		}
 		pending, running := countStates(tasks)
@@ -124,6 +136,7 @@ func (r *Reconciler) observe(ctx context.Context) {
 			r.logger.Debug("no metric data (skipping scale)", "service", svc.Ref.Name)
 		} else {
 			r.logger.Error("metric read failed", "service", svc.Ref.Name, "err", err)
+			r.recorder.Error("metric")
 		}
 
 		// Precise stuck-pending detection (moby/moby#42215): heal only when the
