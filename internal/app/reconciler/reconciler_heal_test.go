@@ -35,7 +35,7 @@ func (h *healFake) ForceUpdate(context.Context, string) error {
 func healReconciler(hf *healFake, clk *fakeClock, threshold time.Duration, dryRun bool) *Reconciler {
 	logger := discardLogger()
 	guard := NewGuard(hf, NewCooldown(clk), Cooldowns{}, dryRun, port.NopRecorder{}, logger)
-	return New(hf, fakeProvider{err: model.ErrNoMetricData}, guard, clk, threshold, port.NopRecorder{}, logger)
+	return New(hf, fakeProvider{err: model.ErrNoMetricData}, guard, clk, threshold, port.NopRecorder{}, nil, 0, logger)
 }
 
 func constrainedSvc() model.ManagedService {

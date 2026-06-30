@@ -94,6 +94,25 @@ func TestGuardNoOpAndNonReplicated(t *testing.T) {
 	}
 }
 
+func TestGuardDirectionAwareCooldown(t *testing.T) {
+	rc := &recordingController{}
+	// scale-up unrestricted (window 0), scale-down gated by a 1m window.
+	g := NewGuard(rc, NewCooldown(newFakeClock()),
+		Cooldowns{ScaleUp: 0, ScaleDown: time.Minute, Heal: 0}, false, port.NopRecorder{}, discardLogger())
+
+	// a scale-up applies (and records the timestamp)...
+	if err := g.Scale(context.Background(), replicatedSvc(2), 5); err != nil {
+		t.Fatal(err)
+	}
+	// ...an immediate scale-down is gated by the (long) scale-down window.
+	if err := g.Scale(context.Background(), replicatedSvc(5), 3); err != nil {
+		t.Fatal(err)
+	}
+	if rc.scaleCalls != 1 {
+		t.Errorf("scale-down within the down window must be suppressed, got %d scale calls", rc.scaleCalls)
+	}
+}
+
 func TestGuardScaleErrorPropagates(t *testing.T) {
 	rc := &recordingController{scaleErr: errors.New("boom")}
 	g := NewGuard(rc, NewCooldown(newFakeClock()), Cooldowns{}, false, port.NopRecorder{}, discardLogger())

@@ -22,14 +22,17 @@ type Reconciler struct {
 	clock         port.Clock
 	healThreshold time.Duration
 	recorder      port.Recorder
+	stabilizer    *Stabilizer
+	maxStep       uint64
 	logger        *slog.Logger
 }
 
 // New constructs a Reconciler. healThreshold is the minimum time a task must be
-// pending before the healer treats the service as stuck. A nil recorder falls
-// back to a no-op, a nil logger to slog.Default, and a nil clock to the system
-// clock.
-func New(swarm port.SwarmController, metrics port.MetricsProvider, guard *Guard, clock port.Clock, healThreshold time.Duration, recorder port.Recorder, logger *slog.Logger) *Reconciler {
+// pending before the healer treats the service as stuck; stabilizer dampens
+// scale-downs and maxStep caps a scaling action's magnitude (0 = unlimited). A
+// nil recorder falls back to a no-op, a nil stabilizer to a disabled one, a nil
+// logger to slog.Default, and a nil clock to the system clock.
+func New(swarm port.SwarmController, metrics port.MetricsProvider, guard *Guard, clock port.Clock, healThreshold time.Duration, recorder port.Recorder, stabilizer *Stabilizer, maxStep uint64, logger *slog.Logger) *Reconciler {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -39,6 +42,9 @@ func New(swarm port.SwarmController, metrics port.MetricsProvider, guard *Guard,
 	if recorder == nil {
 		recorder = port.NopRecorder{}
 	}
+	if stabilizer == nil {
+		stabilizer = NewStabilizer(0)
+	}
 	return &Reconciler{
 		swarm:         swarm,
 		metrics:       metrics,
@@ -46,6 +52,8 @@ func New(swarm port.SwarmController, metrics port.MetricsProvider, guard *Guard,
 		clock:         clock,
 		healThreshold: healThreshold,
 		recorder:      recorder,
+		stabilizer:    stabilizer,
+		maxStep:       maxStep,
 		logger:        logger,
 	}
 }
@@ -124,12 +132,17 @@ func (r *Reconciler) observe(ctx context.Context) {
 		// through the Guard (which enforces dry-run + cooldown + no-op).
 		// Missing data is normal, not an error.
 		if val, err := r.metrics.Value(ctx, svc); err == nil {
+			// Desired (proportional + tolerance) → stabilize (dampen scale-down)
+			// → ClampStep (cap magnitude) → guard (dry-run + per-direction cooldown).
 			desired := autoscaler.Desired(svc.Replicas, val, svc.Policy)
+			stabilized := r.stabilizer.Recommend(svc.Ref.ID, svc.Replicas, desired, now)
+			final := autoscaler.ClampStep(svc.Replicas, stabilized, r.maxStep)
 			r.logger.Info("scaling decision",
 				"service", svc.Ref.Name, "metric", svc.Policy.Metric,
 				"value", val, "target", svc.Policy.Target,
-				"current", svc.Replicas, "desired", desired)
-			if err := r.guard.Scale(ctx, svc, desired); err != nil {
+				"current", svc.Replicas, "desired", desired,
+				"stabilized", stabilized, "final", final)
+			if err := r.guard.Scale(ctx, svc, final); err != nil {
 				r.logger.Error("scale failed", "service", svc.Ref.Name, "err", err)
 			}
 		} else if errors.Is(err, model.ErrNoMetricData) {

@@ -38,11 +38,11 @@ Rationale: Milestone 9 — prevent replica flapping with separate scale-up/scale
 
 ### Phase 2: App
 - [x] Task 45: Direction-aware cooldown — `Cooldown` becomes a pure timestamp tracker (`Allowed(id, window)`); guard holds `Cooldowns{ScaleUp, ScaleDown, Heal}` and gates by direction. Update `NewGuard` + all call sites. (depends on 44)
-- [ ] Task 46: `Stabilizer` — in-memory per-service recommendation history; `Recommend(id, current, desired, now)` returns the max recommendation within the down-window for scale-downs, immediate otherwise; prune old entries; `NewStabilizer(window, clock)`. (depends on 44)
+- [x] Task 46: `Stabilizer` — in-memory per-service recommendation history; `Recommend(id, current, desired, now)` returns the max recommendation within the down-window for scale-downs, immediate otherwise; prune old entries; `NewStabilizer(window, clock)`. (depends on 44)
 
 ### Phase 3: Wiring + Tests
-- [ ] Task 47: Wire into `reconciler.observe` (`Desired` → `Stabilizer.Recommend` → `ClampStep` → `Guard.Scale`); `main.go` builds the stabilizer and passes the step limit + cooldown policy; update constructors/test sites. (depends on 43, 45, 46)
-- [ ] Task 48: Tests — `ClampStep`, direction-aware cooldown, stabilizer (max-over-window / post-window / scale-up / pruning), config, reconciler integration. (depends on 47)
+- [x] Task 47: Wire into `reconciler.observe` (`Desired` → `Stabilizer.Recommend` → `ClampStep` → `Guard.Scale`); `main.go` builds the stabilizer and passes the step limit + cooldown policy; update constructors/test sites. (depends on 43, 45, 46)
+- [x] Task 48: Tests — `ClampStep`, direction-aware cooldown, stabilizer (max-over-window / post-window / scale-up / pruning), config, reconciler integration. (depends on 47)
 <!-- Commit checkpoint: 46-48 -->
 
 ## Definition of Done

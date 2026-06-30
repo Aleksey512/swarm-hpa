@@ -12,7 +12,7 @@
 - [x] **Stuck-task healer** — `core/healer` detection (5-point pending signature) + force-update via `SwarmController` with cooldown; recovers the moby#42215 stall automatically
 - [x] **Prometheus metrics provider** — `adapter/metrics/prometheus` (PromQL signals), provider selection per service via labels/config (closest to K8s custom/external metrics)
 - [x] **Self-observability `/metrics`** — `prometheus/client_golang` endpoint exposing the daemon's decisions, scales applied, tasks healed, and errors; finalize structured slog fields
-- [ ] **Scale stabilization** — separate scale-up/scale-down cooldowns, step limits, and stabilization windows to prevent flapping
+- [x] **Scale stabilization** — separate scale-up/scale-down cooldowns, step limits, and stabilization windows to prevent flapping
 - [ ] **Testing & resilience hardening** — table-driven tests for decision logic, fakes for ports, transient Docker/Prometheus error tolerance, goroutine-leak checks, integration test harness
 - [ ] **Packaging & deployment** — Dockerfile, least-privilege run/stack example, README/docs, build-time version embedding
 
@@ -28,3 +28,4 @@
 | Stuck-task healer | 2026-06-30 |
 | Prometheus metrics provider | 2026-06-30 |
 | Self-observability /metrics | 2026-06-30 |
+| Scale stabilization | 2026-06-30 |

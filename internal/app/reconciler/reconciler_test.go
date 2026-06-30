@@ -55,7 +55,7 @@ const testHealThreshold = time.Minute
 func newTestReconciler(fc port.SwarmController) *Reconciler {
 	logger := discardLogger()
 	guard := NewGuard(fc, NewCooldown(port.SystemClock{}), Cooldowns{}, true, port.NopRecorder{}, logger)
-	return New(fc, fakeProvider{err: model.ErrNoMetricData}, guard, port.SystemClock{}, testHealThreshold, port.NopRecorder{}, logger)
+	return New(fc, fakeProvider{err: model.ErrNoMetricData}, guard, port.SystemClock{}, testHealThreshold, port.NopRecorder{}, nil, 0, logger)
 }
 
 // runUntilCancel runs rec.Run with a long interval, cancels immediately, and

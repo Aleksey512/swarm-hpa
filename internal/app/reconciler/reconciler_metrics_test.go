@@ -37,7 +37,7 @@ func TestObserveReadsMetricValue(t *testing.T) {
 	mp := &observeProvider{val: 42}
 	logger := discardLogger()
 	guard := NewGuard(hf, NewCooldown(port.SystemClock{}), Cooldowns{}, true, port.NopRecorder{}, logger)
-	rec := New(hf, mp, guard, port.SystemClock{}, testHealThreshold, port.NopRecorder{}, logger)
+	rec := New(hf, mp, guard, port.SystemClock{}, testHealThreshold, port.NopRecorder{}, nil, 0, logger)
 
 	rec.observe(context.Background())
 	if mp.called != 1 {
@@ -50,7 +50,7 @@ func TestObserveToleratesNoMetricData(t *testing.T) {
 	mp := &observeProvider{err: model.ErrNoMetricData}
 	logger := discardLogger()
 	guard := NewGuard(hf, NewCooldown(port.SystemClock{}), Cooldowns{}, true, port.NopRecorder{}, logger)
-	rec := New(hf, mp, guard, port.SystemClock{}, testHealThreshold, port.NopRecorder{}, logger)
+	rec := New(hf, mp, guard, port.SystemClock{}, testHealThreshold, port.NopRecorder{}, nil, 0, logger)
 
 	rec.observe(context.Background()) // must not panic or stop
 	if mp.called != 1 {
@@ -63,7 +63,7 @@ func TestObserveToleratesMetricError(t *testing.T) {
 	mp := &observeProvider{err: errors.New("provider boom")}
 	logger := discardLogger()
 	guard := NewGuard(hf, NewCooldown(port.SystemClock{}), Cooldowns{}, true, port.NopRecorder{}, logger)
-	rec := New(hf, mp, guard, port.SystemClock{}, testHealThreshold, port.NopRecorder{}, logger)
+	rec := New(hf, mp, guard, port.SystemClock{}, testHealThreshold, port.NopRecorder{}, nil, 0, logger)
 
 	rec.observe(context.Background()) // a provider error must not stop observation
 	if mp.called != 1 {

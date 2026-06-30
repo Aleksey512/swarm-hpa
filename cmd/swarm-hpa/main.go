@@ -74,7 +74,8 @@ func run() int {
 	cooldown := reconciler.NewCooldown(clock)
 	cooldowns := reconciler.Cooldowns{ScaleUp: cfg.ScaleUpCooldown, ScaleDown: cfg.ScaleDownCooldown, Heal: cfg.Cooldown}
 	guard := reconciler.NewGuard(swarmCtl, cooldown, cooldowns, cfg.DryRun, recorder, logger)
-	rec := reconciler.New(swarmCtl, metricsProvider, guard, clock, cfg.HealThreshold, recorder, logger)
+	stabilizer := reconciler.NewStabilizer(cfg.ScaleDownStabilizationWindow)
+	rec := reconciler.New(swarmCtl, metricsProvider, guard, clock, cfg.HealThreshold, recorder, stabilizer, cfg.MaxScaleStep, logger)
 
 	// Serve the daemon's own /metrics endpoint. Best-effort: a serve failure is
 	// logged but never stops the reconcile loop (the daemon's core job is

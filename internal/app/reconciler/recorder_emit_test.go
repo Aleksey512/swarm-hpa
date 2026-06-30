@@ -69,7 +69,7 @@ func (emitController) ForceUpdate(context.Context, string) error         { retur
 
 func observeWith(c port.SwarmController, mp port.MetricsProvider, fr *fakeRecorder) {
 	guard := NewGuard(c, NewCooldown(newFakeClock()), Cooldowns{}, true, fr, discardLogger())
-	rec := New(c, mp, guard, newFakeClock(), testHealThreshold, fr, discardLogger())
+	rec := New(c, mp, guard, newFakeClock(), testHealThreshold, fr, nil, 0, discardLogger())
 	rec.observe(context.Background())
 }
 
