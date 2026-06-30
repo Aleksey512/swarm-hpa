@@ -3,7 +3,7 @@ package autoscaler
 import (
 	"math"
 
-	"github.com/wmid/swarm-hpa/internal/core/model"
+	"github.com/Aleksey512/swarm-hpa/internal/core/model"
 )
 
 // DefaultTolerance is the deadband around the target (mirroring the Kubernetes

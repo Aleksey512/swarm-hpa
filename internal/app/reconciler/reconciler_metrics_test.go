@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/wmid/swarm-hpa/internal/core/model"
-	"github.com/wmid/swarm-hpa/internal/core/port"
+	"github.com/Aleksey512/swarm-hpa/internal/core/model"
+	"github.com/Aleksey512/swarm-hpa/internal/core/port"
 )
 
 // observeProvider is a metrics provider whose Value is recorded so the observe

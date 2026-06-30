@@ -3,7 +3,7 @@ package port
 import (
 	"context"
 
-	"github.com/wmid/swarm-hpa/internal/core/model"
+	"github.com/Aleksey512/swarm-hpa/internal/core/model"
 )
 
 // SwarmController is the core's interface to Docker Swarm. It currently exposes

@@ -12,7 +12,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	dswarm "github.com/docker/docker/api/types/swarm"
 
-	"github.com/wmid/swarm-hpa/internal/core/model"
+	"github.com/Aleksey512/swarm-hpa/internal/core/model"
 )
 
 func discardLogger() *slog.Logger {

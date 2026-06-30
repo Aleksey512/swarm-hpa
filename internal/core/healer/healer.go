@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wmid/swarm-hpa/internal/core/model"
+	"github.com/Aleksey512/swarm-hpa/internal/core/model"
 )
 
 // Constraint operators understood by the detector. Anything else is treated as

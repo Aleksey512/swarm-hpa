@@ -8,12 +8,12 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/wmid/swarm-hpa/internal/adapter/metrics"
-	"github.com/wmid/swarm-hpa/internal/adapter/observability"
-	swarmadapter "github.com/wmid/swarm-hpa/internal/adapter/swarm"
-	"github.com/wmid/swarm-hpa/internal/app/reconciler"
-	"github.com/wmid/swarm-hpa/internal/config"
-	"github.com/wmid/swarm-hpa/internal/core/port"
+	"github.com/Aleksey512/swarm-hpa/internal/adapter/metrics"
+	"github.com/Aleksey512/swarm-hpa/internal/adapter/observability"
+	swarmadapter "github.com/Aleksey512/swarm-hpa/internal/adapter/swarm"
+	"github.com/Aleksey512/swarm-hpa/internal/app/reconciler"
+	"github.com/Aleksey512/swarm-hpa/internal/config"
+	"github.com/Aleksey512/swarm-hpa/internal/core/port"
 )
 
 // version is set at build time via -ldflags "-X main.version=...".

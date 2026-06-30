@@ -46,7 +46,7 @@ source layout follows the Explicit Architecture (ports & adapters) in
 │   └── config/              # flag/env config + swarm.autoscaler.* label parsing
 ├── Makefile                 # build/run/test/test-race/lint/fmt/vet/tidy/cover
 ├── .golangci.yml            # golangci-lint v2 config
-├── go.mod                   # module github.com/wmid/swarm-hpa
+├── go.mod                   # module github.com/Aleksey512/swarm-hpa
 ├── .ai-factory/             # AI Factory context (DESCRIPTION, ARCHITECTURE, ROADMAP, config, rules, plans)
 ├── .claude/skills/          # aif-*, golang-*, prometheus-label-strategy, docker-swarm-go-sdk
 └── skills-lock.json         # skills.sh lockfile

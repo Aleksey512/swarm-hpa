@@ -8,9 +8,9 @@ import (
 
 	"github.com/docker/docker/client"
 
-	"github.com/wmid/swarm-hpa/internal/adapter/metrics/dockerstats"
-	"github.com/wmid/swarm-hpa/internal/config"
-	"github.com/wmid/swarm-hpa/internal/core/port"
+	"github.com/Aleksey512/swarm-hpa/internal/adapter/metrics/dockerstats"
+	"github.com/Aleksey512/swarm-hpa/internal/config"
+	"github.com/Aleksey512/swarm-hpa/internal/core/port"
 )
 
 // New constructs the metrics provider named by cfg.MetricsProvider.

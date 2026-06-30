@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/wmid/swarm-hpa/internal/core/model"
+	"github.com/Aleksey512/swarm-hpa/internal/core/model"
 )
 
 // Label keys for the swarm.autoscaler.* opt-in namespace. A service is managed

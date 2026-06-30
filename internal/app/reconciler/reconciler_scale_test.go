@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/wmid/swarm-hpa/internal/core/model"
-	"github.com/wmid/swarm-hpa/internal/core/port"
+	"github.com/Aleksey512/swarm-hpa/internal/core/model"
+	"github.com/Aleksey512/swarm-hpa/internal/core/port"
 )
 
 // scaleFake serves one managed service (no tasks) and records Scale calls so the

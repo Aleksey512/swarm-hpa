@@ -3,7 +3,7 @@ package metrics
 import (
 	"testing"
 
-	"github.com/wmid/swarm-hpa/internal/config"
+	"github.com/Aleksey512/swarm-hpa/internal/config"
 )
 
 func TestFactoryDockerStats(t *testing.T) {

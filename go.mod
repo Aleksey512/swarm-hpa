@@ -1,4 +1,4 @@
-module github.com/wmid/swarm-hpa
+module github.com/Aleksey512/swarm-hpa
 
 go 1.25.0
 

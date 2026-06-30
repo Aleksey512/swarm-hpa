@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wmid/swarm-hpa/internal/core/model"
-	"github.com/wmid/swarm-hpa/internal/core/port"
+	"github.com/Aleksey512/swarm-hpa/internal/core/model"
+	"github.com/Aleksey512/swarm-hpa/internal/core/port"
 )
 
 // fakeController is a configurable port.SwarmController for tests (no live daemon).

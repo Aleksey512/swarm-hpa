@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wmid/swarm-hpa/internal/core/model"
+	"github.com/Aleksey512/swarm-hpa/internal/core/model"
 )
 
 // healFake serves reads (one constrained service, its tasks, and the cluster

@@ -10,9 +10,9 @@ import (
 	dswarm "github.com/docker/docker/api/types/swarm"
 	"github.com/docker/docker/client"
 
-	"github.com/wmid/swarm-hpa/internal/config"
-	"github.com/wmid/swarm-hpa/internal/core/model"
-	"github.com/wmid/swarm-hpa/internal/core/port"
+	"github.com/Aleksey512/swarm-hpa/internal/config"
+	"github.com/Aleksey512/swarm-hpa/internal/core/model"
+	"github.com/Aleksey512/swarm-hpa/internal/core/port"
 )
 
 // callTimeout bounds every Docker API call so a hung daemon cannot stall the loop.

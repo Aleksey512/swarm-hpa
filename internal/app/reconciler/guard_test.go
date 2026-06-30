@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wmid/swarm-hpa/internal/core/model"
+	"github.com/Aleksey512/swarm-hpa/internal/core/model"
 )
 
 // recordingController counts mutation calls so the guard's gating can be asserted.

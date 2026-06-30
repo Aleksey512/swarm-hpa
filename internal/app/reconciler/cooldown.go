@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wmid/swarm-hpa/internal/core/port"
+	"github.com/Aleksey512/swarm-hpa/internal/core/port"
 )
 
 // Cooldown rate-limits mutations per service: a service may be acted on at most

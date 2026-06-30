@@ -13,8 +13,8 @@ import (
 	dswarm "github.com/docker/docker/api/types/swarm"
 	"github.com/docker/docker/client"
 
-	"github.com/wmid/swarm-hpa/internal/core/model"
-	"github.com/wmid/swarm-hpa/internal/core/port"
+	"github.com/Aleksey512/swarm-hpa/internal/core/model"
+	"github.com/Aleksey512/swarm-hpa/internal/core/port"
 )
 
 // callTimeout bounds each Docker API call.

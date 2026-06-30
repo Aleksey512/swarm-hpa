@@ -6,10 +6,10 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/wmid/swarm-hpa/internal/core/autoscaler"
-	"github.com/wmid/swarm-hpa/internal/core/healer"
-	"github.com/wmid/swarm-hpa/internal/core/model"
-	"github.com/wmid/swarm-hpa/internal/core/port"
+	"github.com/Aleksey512/swarm-hpa/internal/core/autoscaler"
+	"github.com/Aleksey512/swarm-hpa/internal/core/healer"
+	"github.com/Aleksey512/swarm-hpa/internal/core/model"
+	"github.com/Aleksey512/swarm-hpa/internal/core/port"
 )
 
 // Reconciler runs the periodic control loop. It observes Swarm (read-only) and

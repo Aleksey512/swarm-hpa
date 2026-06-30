@@ -3,7 +3,7 @@ package autoscaler
 import (
 	"testing"
 
-	"github.com/wmid/swarm-hpa/internal/core/model"
+	"github.com/Aleksey512/swarm-hpa/internal/core/model"
 )
 
 func policy(min, max uint64, target float64) model.ServicePolicy {

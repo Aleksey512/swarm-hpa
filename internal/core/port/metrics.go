@@ -3,7 +3,7 @@ package port
 import (
 	"context"
 
-	"github.com/wmid/swarm-hpa/internal/core/model"
+	"github.com/Aleksey512/swarm-hpa/internal/core/model"
 )
 
 // MetricsProvider yields the current aggregate value of a managed service's
