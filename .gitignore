@@ -1,12 +1,11 @@
-# If you prefer the allow list template instead of the deny list, see community template:
-# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
-#
 # Binaries for programs and plugins
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
+/bin/
+/swarm-hpa
 
 # Test binary, built with `go test -c`
 *.test
@@ -24,9 +23,36 @@ profile.cov
 go.work
 go.work.sum
 
-# env file
+# Env / local
 .env
+.env.*
+!.env.example
 
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# OS / editor cruft
+.DS_Store
+
+# Attachment files (stored inside project .ai-factory/files/)
+.ai-factory/files/
+.ai-factory/PLAN.md
+
+# AI Factory (keep tracked files, ignore generated)
+.ai-factory.json
+.ai-factory/skill-context/
+.mcp.json
+
+# Claude Code
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/pr-review/
+
+# Codex and other agent
+/.codex/
+/.agents/
+/.github/skills/
+.junie/
+/.stryker-tmp/
