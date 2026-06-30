@@ -40,11 +40,11 @@ Rationale: Milestone 7 — add a PromQL-backed `MetricsProvider` (RPS, p95 laten
 - [x] Task 35: Implement `prometheus.Provider` over `client_golang` `api` + `api/prometheus/v1` (narrow `queryAPI` iface; `New(url, timeout, logger)`; instant query from `Policy.Query` with `$SERVICE`/`$SERVICE_ID` substitution; scalar / single-vector → float; empty/NaN → `ErrNoMetricData`; multi-series / empty-query / HTTP error → wrapped error). Add the `prometheus/client_golang` dependency. (depends on 33, 34)
 
 ### Phase 3: Routing & Wiring
-- [ ] Task 36: Add `Router` provider dispatching by `Policy.Source` with global fallback; rewire `metrics.New` (dockerstats always + prometheus when URL set + Router). Replace the not-implemented branch; update `factory_test.go`. (depends on 35)
+- [x] Task 36: Add `Router` provider dispatching by `Policy.Source` with global fallback; rewire `metrics.New` (dockerstats always + prometheus when URL set + Router). Replace the not-implemented branch; update `factory_test.go`. (depends on 35)
 <!-- Commit checkpoint: 36-37 -->
 
 ### Phase 4: Tests
-- [ ] Task 37: Tests — provider via fake `queryAPI` (scalar / single vector / empty→`ErrNoMetricData` / NaN→`ErrNoMetricData` / multi-series→error / empty-query→error; optional `httptest` smoke test) + router (dispatch / default fallback / prometheus-unconfigured error) + labels (query/source) + config timeout. (depends on 36)
+- [x] Task 37: Tests — provider via fake `queryAPI` (scalar / single vector / empty→`ErrNoMetricData` / NaN→`ErrNoMetricData` / multi-series→error / empty-query→error; optional `httptest` smoke test) + router (dispatch / default fallback / prometheus-unconfigured error) + labels (query/source) + config timeout. (depends on 36)
 
 ## Definition of Done
 - `go build ./...`, `go vet ./...` pass; `make test` green.

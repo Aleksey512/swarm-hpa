@@ -13,9 +13,20 @@ func TestFactoryDockerStats(t *testing.T) {
 	}
 }
 
-func TestFactoryPrometheusNotImplemented(t *testing.T) {
+func TestFactoryPrometheusRequiresURL(t *testing.T) {
+	// prometheus as the global default with no URL is a misconfiguration.
 	if _, err := New(config.Config{MetricsProvider: config.ProviderPrometheus}, nil, nil); err == nil {
-		t.Error("prometheus provider must return a not-implemented error")
+		t.Error("prometheus default without a URL must return an error")
+	}
+}
+
+func TestFactoryPrometheusWithURL(t *testing.T) {
+	p, err := New(config.Config{
+		MetricsProvider: config.ProviderPrometheus,
+		PrometheusURL:   "http://prometheus:9090",
+	}, nil, nil)
+	if err != nil || p == nil {
+		t.Fatalf("prometheus with URL: provider=%v err=%v", p, err)
 	}
 }
 
