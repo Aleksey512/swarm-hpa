@@ -64,6 +64,7 @@ docker service update \
 | [Getting Started](docs/getting-started.md) | Prerequisites, build, run, verify |
 | [Configuration](docs/configuration.md) | Daemon flags/env and `swarm.autoscaler.*` service labels |
 | [Metrics Providers](docs/metrics-providers.md) | Docker stats vs Prometheus, per-service routing, PromQL |
+| [Observability](docs/observability.md) | The daemon's own `/metrics` endpoint and metric catalog |
 
 ## License
 
