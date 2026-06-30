@@ -54,7 +54,7 @@ const testHealThreshold = time.Minute
 // provider that reports no metric data.
 func newTestReconciler(fc port.SwarmController) *Reconciler {
 	logger := discardLogger()
-	guard := NewGuard(fc, NewCooldown(0, port.SystemClock{}), true, port.NopRecorder{}, logger)
+	guard := NewGuard(fc, NewCooldown(port.SystemClock{}), Cooldowns{}, true, port.NopRecorder{}, logger)
 	return New(fc, fakeProvider{err: model.ErrNoMetricData}, guard, port.SystemClock{}, testHealThreshold, port.NopRecorder{}, logger)
 }
 

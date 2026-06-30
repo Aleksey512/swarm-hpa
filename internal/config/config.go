@@ -23,9 +23,21 @@ const (
 type Config struct {
 	// PollInterval is the reconcile loop period.
 	PollInterval time.Duration
-	// Cooldown is the minimum interval between mutations of the same service
-	// (0 disables rate-limiting).
+	// Cooldown is the minimum interval between heal (force-update) actions on
+	// the same service (0 disables rate-limiting).
 	Cooldown time.Duration
+	// ScaleUpCooldown / ScaleDownCooldown are the minimum intervals between
+	// scale-up / scale-down actions on the same service (0 disables). Heal uses
+	// Cooldown above.
+	ScaleUpCooldown   time.Duration
+	ScaleDownCooldown time.Duration
+	// MaxScaleStep caps how many replicas a single scaling action may change
+	// (0 = unlimited).
+	MaxScaleStep uint64
+	// ScaleDownStabilizationWindow holds a scale-down until the recommendation
+	// has stayed low for this long (0 disables); scale-ups are unaffected. This
+	// mirrors the Kubernetes HPA scale-down stabilization window.
+	ScaleDownStabilizationWindow time.Duration
 	// HealThreshold is the minimum duration a task must stay pending (while
 	// desired-running) before the healer considers the service stuck. A higher
 	// value is more conservative; 0 disables the duration gate.
@@ -53,6 +65,8 @@ func Default() Config {
 	return Config{
 		PollInterval:      15 * time.Second,
 		Cooldown:          3 * time.Minute,
+		ScaleUpCooldown:   3 * time.Minute,
+		ScaleDownCooldown: 3 * time.Minute,
 		HealThreshold:     2 * time.Minute,
 		DryRun:            true,
 		LogLevel:          "info",
@@ -70,6 +84,15 @@ func (c Config) Validate() error {
 	}
 	if c.Cooldown < 0 {
 		return fmt.Errorf("cooldown must be >= 0, got %s", c.Cooldown)
+	}
+	if c.ScaleUpCooldown < 0 {
+		return fmt.Errorf("scale_up_cooldown must be >= 0, got %s", c.ScaleUpCooldown)
+	}
+	if c.ScaleDownCooldown < 0 {
+		return fmt.Errorf("scale_down_cooldown must be >= 0, got %s", c.ScaleDownCooldown)
+	}
+	if c.ScaleDownStabilizationWindow < 0 {
+		return fmt.Errorf("scale_down_stabilization must be >= 0, got %s", c.ScaleDownStabilizationWindow)
 	}
 	if c.HealThreshold < 0 {
 		return fmt.Errorf("heal_threshold must be >= 0, got %s", c.HealThreshold)
@@ -109,6 +132,10 @@ func (c Config) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.Duration("poll_interval", c.PollInterval),
 		slog.Duration("cooldown", c.Cooldown),
+		slog.Duration("scale_up_cooldown", c.ScaleUpCooldown),
+		slog.Duration("scale_down_cooldown", c.ScaleDownCooldown),
+		slog.Uint64("max_scale_step", c.MaxScaleStep),
+		slog.Duration("scale_down_stabilization", c.ScaleDownStabilizationWindow),
 		slog.Duration("heal_threshold", c.HealThreshold),
 		slog.Bool("dry_run", c.DryRun),
 		slog.String("log_level", c.LogLevel),
@@ -158,6 +185,34 @@ func LoadArgs(args []string, lookupEnv func(string) (string, bool)) (Config, err
 		}
 		c.Cooldown = d
 	}
+	if v, ok := lookupEnv("SCALE_UP_COOLDOWN"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("env SCALE_UP_COOLDOWN=%q: %w", v, err)
+		}
+		c.ScaleUpCooldown = d
+	}
+	if v, ok := lookupEnv("SCALE_DOWN_COOLDOWN"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("env SCALE_DOWN_COOLDOWN=%q: %w", v, err)
+		}
+		c.ScaleDownCooldown = d
+	}
+	if v, ok := lookupEnv("MAX_SCALE_STEP"); ok {
+		n, err := strconv.ParseUint(v, 10, 64)
+		if err != nil {
+			return Config{}, fmt.Errorf("env MAX_SCALE_STEP=%q: %w", v, err)
+		}
+		c.MaxScaleStep = n
+	}
+	if v, ok := lookupEnv("SCALE_DOWN_STABILIZATION"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("env SCALE_DOWN_STABILIZATION=%q: %w", v, err)
+		}
+		c.ScaleDownStabilizationWindow = d
+	}
 	if v, ok := lookupEnv("HEAL_THRESHOLD"); ok {
 		d, err := time.ParseDuration(v)
 		if err != nil {
@@ -198,7 +253,11 @@ func LoadArgs(args []string, lookupEnv func(string) (string, bool)) (Config, err
 	fs := flag.NewFlagSet("swarm-hpa", flag.ContinueOnError)
 	fs.SetOutput(io.Discard) // errors are returned, not printed
 	pollInterval := fs.Duration("poll-interval", c.PollInterval, "reconcile loop interval")
-	cooldown := fs.Duration("cooldown", c.Cooldown, "minimum interval between mutations of the same service")
+	cooldown := fs.Duration("cooldown", c.Cooldown, "minimum interval between heal actions on the same service")
+	scaleUpCooldown := fs.Duration("scale-up-cooldown", c.ScaleUpCooldown, "minimum interval between scale-up actions on the same service")
+	scaleDownCooldown := fs.Duration("scale-down-cooldown", c.ScaleDownCooldown, "minimum interval between scale-down actions on the same service")
+	maxScaleStep := fs.Uint64("max-scale-step", c.MaxScaleStep, "maximum replicas changed per scaling action (0 = unlimited)")
+	scaleDownStabilization := fs.Duration("scale-down-stabilization", c.ScaleDownStabilizationWindow, "hold a scale-down until the recommendation has stayed low for this long (0 = disabled)")
 	healThreshold := fs.Duration("heal-threshold", c.HealThreshold, "minimum time a task must stay pending before the healer force-updates the service")
 	dryRun := fs.Bool("dry-run", c.DryRun, "log intended mutations without applying them")
 	logLevel := fs.String("log-level", c.LogLevel, "log level: debug|info|warn|error")
@@ -214,6 +273,10 @@ func LoadArgs(args []string, lookupEnv func(string) (string, bool)) (Config, err
 
 	c.PollInterval = *pollInterval
 	c.Cooldown = *cooldown
+	c.ScaleUpCooldown = *scaleUpCooldown
+	c.ScaleDownCooldown = *scaleDownCooldown
+	c.MaxScaleStep = *maxScaleStep
+	c.ScaleDownStabilizationWindow = *scaleDownStabilization
 	c.HealThreshold = *healThreshold
 	c.DryRun = *dryRun
 	c.LogLevel = *logLevel

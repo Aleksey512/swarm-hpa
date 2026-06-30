@@ -44,7 +44,7 @@ func replicatedSvc(replicas uint64) model.ManagedService {
 
 func TestGuardDryRunMakesNoMutation(t *testing.T) {
 	rc := &recordingController{}
-	g := NewGuard(rc, NewCooldown(0, newFakeClock()), true, port.NopRecorder{}, discardLogger())
+	g := NewGuard(rc, NewCooldown(newFakeClock()), Cooldowns{}, true, port.NopRecorder{}, discardLogger())
 
 	if err := g.Scale(context.Background(), replicatedSvc(2), 4); err != nil {
 		t.Fatal(err)
@@ -59,7 +59,7 @@ func TestGuardDryRunMakesNoMutation(t *testing.T) {
 
 func TestGuardAppliesWhenEnabled(t *testing.T) {
 	rc := &recordingController{}
-	g := NewGuard(rc, NewCooldown(0, newFakeClock()), false, port.NopRecorder{}, discardLogger())
+	g := NewGuard(rc, NewCooldown(newFakeClock()), Cooldowns{}, false, port.NopRecorder{}, discardLogger())
 
 	if err := g.Scale(context.Background(), replicatedSvc(2), 4); err != nil {
 		t.Fatal(err)
@@ -71,7 +71,7 @@ func TestGuardAppliesWhenEnabled(t *testing.T) {
 
 func TestGuardCooldownSuppressesSecondAction(t *testing.T) {
 	rc := &recordingController{}
-	g := NewGuard(rc, NewCooldown(time.Minute, newFakeClock()), false, port.NopRecorder{}, discardLogger())
+	g := NewGuard(rc, NewCooldown(newFakeClock()), Cooldowns{ScaleUp: time.Minute, ScaleDown: time.Minute, Heal: time.Minute}, false, port.NopRecorder{}, discardLogger())
 	svc := replicatedSvc(2)
 
 	_ = g.Scale(context.Background(), svc, 4) // applies + records
@@ -83,7 +83,7 @@ func TestGuardCooldownSuppressesSecondAction(t *testing.T) {
 
 func TestGuardNoOpAndNonReplicated(t *testing.T) {
 	rc := &recordingController{}
-	g := NewGuard(rc, NewCooldown(0, newFakeClock()), false, port.NopRecorder{}, discardLogger())
+	g := NewGuard(rc, NewCooldown(newFakeClock()), Cooldowns{}, false, port.NopRecorder{}, discardLogger())
 
 	_ = g.Scale(context.Background(), replicatedSvc(3), 3) // no change
 	global := model.ManagedService{Ref: model.ServiceRef{ID: "g", Name: "glob"}, Replicated: false}
@@ -96,7 +96,7 @@ func TestGuardNoOpAndNonReplicated(t *testing.T) {
 
 func TestGuardScaleErrorPropagates(t *testing.T) {
 	rc := &recordingController{scaleErr: errors.New("boom")}
-	g := NewGuard(rc, NewCooldown(0, newFakeClock()), false, port.NopRecorder{}, discardLogger())
+	g := NewGuard(rc, NewCooldown(newFakeClock()), Cooldowns{}, false, port.NopRecorder{}, discardLogger())
 	if err := g.Scale(context.Background(), replicatedSvc(2), 4); err == nil {
 		t.Error("expected the scale error to propagate")
 	}

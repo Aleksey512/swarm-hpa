@@ -38,6 +38,29 @@ func Desired(current uint64, value float64, p model.ServicePolicy) uint64 {
 	return clamp(desired, p.Min, p.Max)
 }
 
+// ClampStep limits a single scaling action's magnitude: the returned value
+// differs from current by at most maxStep replicas. A maxStep of 0 means no
+// limit. It is applied after Desired has already clamped the count to
+// [min, max], as the last guard against large single-step jumps (flapping).
+func ClampStep(current, desired, maxStep uint64) uint64 {
+	if maxStep == 0 || desired == current {
+		return desired
+	}
+	if desired > current {
+		if desired-current > maxStep {
+			return current + maxStep
+		}
+		return desired
+	}
+	// desired < current — current-desired and current-maxStep cannot underflow:
+	// the subtraction below runs only when current-desired > maxStep, so
+	// current > maxStep.
+	if current-desired > maxStep {
+		return current - maxStep
+	}
+	return desired
+}
+
 func clamp(v, lo, hi uint64) uint64 {
 	switch {
 	case v < lo:

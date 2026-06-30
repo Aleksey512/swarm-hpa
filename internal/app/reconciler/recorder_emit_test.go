@@ -68,7 +68,7 @@ func (emitController) Scale(context.Context, string, uint64) error       { retur
 func (emitController) ForceUpdate(context.Context, string) error         { return nil }
 
 func observeWith(c port.SwarmController, mp port.MetricsProvider, fr *fakeRecorder) {
-	guard := NewGuard(c, NewCooldown(0, newFakeClock()), true, fr, discardLogger())
+	guard := NewGuard(c, NewCooldown(newFakeClock()), Cooldowns{}, true, fr, discardLogger())
 	rec := New(c, mp, guard, newFakeClock(), testHealThreshold, fr, discardLogger())
 	rec.observe(context.Background())
 }
@@ -115,7 +115,7 @@ func TestReconcilerEmitsErrorsByStage(t *testing.T) {
 
 func TestGuardEmitsAppliedActions(t *testing.T) {
 	fr := &fakeRecorder{}
-	g := NewGuard(&recordingController{}, NewCooldown(0, newFakeClock()), false, fr, discardLogger())
+	g := NewGuard(&recordingController{}, NewCooldown(newFakeClock()), Cooldowns{}, false, fr, discardLogger())
 	_ = g.Scale(context.Background(), replicatedSvc(2), 4)
 	_ = g.Heal(context.Background(), replicatedSvc(2))
 	if len(fr.scales) != 1 || fr.scales[0] != "web" {
@@ -128,7 +128,7 @@ func TestGuardEmitsAppliedActions(t *testing.T) {
 
 func TestGuardEmitsDryRunSuppressed(t *testing.T) {
 	fr := &fakeRecorder{}
-	g := NewGuard(&recordingController{}, NewCooldown(0, newFakeClock()), true, fr, discardLogger())
+	g := NewGuard(&recordingController{}, NewCooldown(newFakeClock()), Cooldowns{}, true, fr, discardLogger())
 	_ = g.Scale(context.Background(), replicatedSvc(2), 4)
 	_ = g.Heal(context.Background(), replicatedSvc(2))
 	if !contains(fr.suppressed, "scale:dry_run") || !contains(fr.suppressed, "heal:dry_run") {
@@ -138,7 +138,7 @@ func TestGuardEmitsDryRunSuppressed(t *testing.T) {
 
 func TestGuardEmitsCooldownSuppressed(t *testing.T) {
 	fr := &fakeRecorder{}
-	g := NewGuard(&recordingController{}, NewCooldown(time.Minute, newFakeClock()), false, fr, discardLogger())
+	g := NewGuard(&recordingController{}, NewCooldown(newFakeClock()), Cooldowns{ScaleUp: time.Minute, ScaleDown: time.Minute, Heal: time.Minute}, false, fr, discardLogger())
 	svc := replicatedSvc(2)
 	_ = g.Scale(context.Background(), svc, 4) // applied
 	_ = g.Scale(context.Background(), svc, 5) // within cooldown -> suppressed

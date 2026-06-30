@@ -71,8 +71,9 @@ func run() int {
 	}
 	recorder := observability.NewRecorder(version, logger)
 	clock := port.SystemClock{}
-	cooldown := reconciler.NewCooldown(cfg.Cooldown, clock)
-	guard := reconciler.NewGuard(swarmCtl, cooldown, cfg.DryRun, recorder, logger)
+	cooldown := reconciler.NewCooldown(clock)
+	cooldowns := reconciler.Cooldowns{ScaleUp: cfg.ScaleUpCooldown, ScaleDown: cfg.ScaleDownCooldown, Heal: cfg.Cooldown}
+	guard := reconciler.NewGuard(swarmCtl, cooldown, cooldowns, cfg.DryRun, recorder, logger)
 	rec := reconciler.New(swarmCtl, metricsProvider, guard, clock, cfg.HealThreshold, recorder, logger)
 
 	// Serve the daemon's own /metrics endpoint. Best-effort: a serve failure is

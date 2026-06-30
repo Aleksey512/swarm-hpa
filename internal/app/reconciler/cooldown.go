@@ -7,34 +7,33 @@ import (
 	"github.com/Aleksey512/swarm-hpa/internal/core/port"
 )
 
-// Cooldown rate-limits mutations per service: a service may be acted on at most
-// once per window. A window of 0 disables rate-limiting. Separate scale-up /
-// scale-down windows are a later (stabilization) milestone.
+// Cooldown is a per-service "last action" timestamp tracker. The window to
+// enforce is supplied per call (Allowed), so the same tracker can serve
+// direction-aware scale cooldowns and the heal cooldown — the Guard chooses the
+// window. A window of 0 always allows.
 type Cooldown struct {
-	window time.Duration
-	clock  port.Clock
+	clock port.Clock
 
 	mu   sync.Mutex
 	last map[string]time.Time
 }
 
 // NewCooldown returns a cooldown tracker. A nil clock falls back to the system clock.
-func NewCooldown(window time.Duration, clock port.Clock) *Cooldown {
+func NewCooldown(clock port.Clock) *Cooldown {
 	if clock == nil {
 		clock = port.SystemClock{}
 	}
 	return &Cooldown{
-		window: window,
-		clock:  clock,
-		last:   make(map[string]time.Time),
+		clock: clock,
+		last:  make(map[string]time.Time),
 	}
 }
 
-// Allowed reports whether an action on serviceID is permitted now — never acted
-// before, or at least `window` has elapsed since the last action. A zero window
-// always allows.
-func (c *Cooldown) Allowed(serviceID string) bool {
-	if c.window <= 0 {
+// Allowed reports whether an action on serviceID is permitted now given window:
+// never acted before, or at least `window` has elapsed since the last action. A
+// window of 0 always allows.
+func (c *Cooldown) Allowed(serviceID string, window time.Duration) bool {
+	if window <= 0 {
 		return true
 	}
 	c.mu.Lock()
@@ -43,7 +42,7 @@ func (c *Cooldown) Allowed(serviceID string) bool {
 	if !ok {
 		return true
 	}
-	return c.clock.Now().Sub(last) >= c.window
+	return c.clock.Now().Sub(last) >= window
 }
 
 // Record stamps the current time as serviceID's last action.
@@ -51,4 +50,12 @@ func (c *Cooldown) Record(serviceID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.last[serviceID] = c.clock.Now()
+}
+
+// Cooldowns holds the per-action cooldown windows the Guard enforces: scale-ups
+// and scale-downs each get their own window, while heal uses Heal.
+type Cooldowns struct {
+	ScaleUp   time.Duration
+	ScaleDown time.Duration
+	Heal      time.Duration
 }

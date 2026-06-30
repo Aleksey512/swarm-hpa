@@ -85,6 +85,53 @@ func TestLoadArgsHealThreshold(t *testing.T) {
 	}
 }
 
+func TestLoadArgsStabilization(t *testing.T) {
+	// defaults: cooldowns 3m, step/stabilization disabled (0)
+	c, err := LoadArgs(nil, fakeEnv(nil))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.ScaleUpCooldown != 3*time.Minute || c.ScaleDownCooldown != 3*time.Minute {
+		t.Errorf("default scale cooldowns = up:%s down:%s, want 3m/3m", c.ScaleUpCooldown, c.ScaleDownCooldown)
+	}
+	if c.MaxScaleStep != 0 || c.ScaleDownStabilizationWindow != 0 {
+		t.Errorf("defaults must disable step/stabilization, got step=%d window=%s", c.MaxScaleStep, c.ScaleDownStabilizationWindow)
+	}
+
+	// env overrides
+	c, err = LoadArgs(nil, fakeEnv(map[string]string{
+		"SCALE_UP_COOLDOWN":        "30s",
+		"SCALE_DOWN_COOLDOWN":      "10m",
+		"MAX_SCALE_STEP":           "2",
+		"SCALE_DOWN_STABILIZATION": "5m",
+	}))
+	if err != nil {
+		t.Fatalf("env: %v", err)
+	}
+	if c.ScaleUpCooldown != 30*time.Second || c.ScaleDownCooldown != 10*time.Minute ||
+		c.MaxScaleStep != 2 || c.ScaleDownStabilizationWindow != 5*time.Minute {
+		t.Errorf("env override failed: %+v", c)
+	}
+
+	// flag over env
+	c, err = LoadArgs([]string{"--max-scale-step=5", "--scale-down-cooldown=1m"},
+		fakeEnv(map[string]string{"MAX_SCALE_STEP": "2", "SCALE_DOWN_COOLDOWN": "10m"}))
+	if err != nil || c.MaxScaleStep != 5 || c.ScaleDownCooldown != time.Minute {
+		t.Fatalf("flag over env: err=%v step=%d down=%s", err, c.MaxScaleStep, c.ScaleDownCooldown)
+	}
+
+	// invalid values
+	if _, err := LoadArgs([]string{"--scale-down-stabilization=-1s"}, fakeEnv(nil)); err == nil {
+		t.Error("negative scale_down_stabilization must be rejected")
+	}
+	if _, err := LoadArgs(nil, fakeEnv(map[string]string{"MAX_SCALE_STEP": "-1"})); err == nil {
+		t.Error("non-uint MAX_SCALE_STEP must be rejected")
+	}
+	if _, err := LoadArgs(nil, fakeEnv(map[string]string{"SCALE_UP_COOLDOWN": "soon"})); err == nil {
+		t.Error("malformed SCALE_UP_COOLDOWN must be rejected")
+	}
+}
+
 func TestLoadArgsPrometheusTimeout(t *testing.T) {
 	// default
 	c, err := LoadArgs(nil, fakeEnv(nil))

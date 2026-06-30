@@ -19,21 +19,23 @@ import (
 type Guard struct {
 	swarm    port.SwarmController
 	cooldown *Cooldown
+	windows  Cooldowns
 	dryRun   bool
 	recorder port.Recorder
 	logger   *slog.Logger
 }
 
-// NewGuard constructs a Guard. A nil recorder falls back to a no-op and a nil
+// NewGuard constructs a Guard. windows holds the per-action cooldown windows
+// (scale-up / scale-down / heal). A nil recorder falls back to a no-op and a nil
 // logger to slog.Default.
-func NewGuard(swarm port.SwarmController, cooldown *Cooldown, dryRun bool, recorder port.Recorder, logger *slog.Logger) *Guard {
+func NewGuard(swarm port.SwarmController, cooldown *Cooldown, windows Cooldowns, dryRun bool, recorder port.Recorder, logger *slog.Logger) *Guard {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if recorder == nil {
 		recorder = port.NopRecorder{}
 	}
-	return &Guard{swarm: swarm, cooldown: cooldown, dryRun: dryRun, recorder: recorder, logger: logger}
+	return &Guard{swarm: swarm, cooldown: cooldown, windows: windows, dryRun: dryRun, recorder: recorder, logger: logger}
 }
 
 // Scale moves a replicated service toward `desired`, gated by dry-run + cooldown.
@@ -47,14 +49,22 @@ func (g *Guard) Scale(ctx context.Context, svc model.ManagedService, desired uin
 	case desired == svc.Replicas:
 		g.logger.Debug("skip scale: no change", "service", name, "replicas", desired)
 		return nil
-	case !g.cooldown.Allowed(id):
-		g.logger.Info("scale suppressed by cooldown", "service", name)
+	}
+
+	// Pick the cooldown window by direction: scale-ups and scale-downs are gated
+	// independently so a service can react fast one way and slowly the other.
+	window, direction := g.windows.ScaleDown, "down"
+	if desired > svc.Replicas {
+		window, direction = g.windows.ScaleUp, "up"
+	}
+	if !g.cooldown.Allowed(id, window) {
+		g.logger.Info("scale suppressed by cooldown", "service", name, "direction", direction)
 		g.recorder.ActionSuppressed("scale", "cooldown")
 		return nil
 	}
 
 	if g.dryRun {
-		g.logger.Info("dry-run: would scale", "service", name, "from", svc.Replicas, "to", desired)
+		g.logger.Info("dry-run: would scale", "service", name, "from", svc.Replicas, "to", desired, "direction", direction)
 		g.cooldown.Record(id)
 		g.recorder.ActionSuppressed("scale", "dry_run")
 		return nil
@@ -66,14 +76,14 @@ func (g *Guard) Scale(ctx context.Context, svc model.ManagedService, desired uin
 	}
 	g.cooldown.Record(id)
 	g.recorder.ScaleApplied(name)
-	g.logger.Info("scaled", "service", name, "from", svc.Replicas, "to", desired)
+	g.logger.Info("scaled", "service", name, "from", svc.Replicas, "to", desired, "direction", direction)
 	return nil
 }
 
 // Heal force-updates a service to unstick its tasks, gated by dry-run + cooldown.
 func (g *Guard) Heal(ctx context.Context, svc model.ManagedService) error {
 	id, name := svc.Ref.ID, svc.Ref.Name
-	if !g.cooldown.Allowed(id) {
+	if !g.cooldown.Allowed(id, g.windows.Heal) {
 		g.logger.Info("heal suppressed by cooldown", "service", name)
 		g.recorder.ActionSuppressed("heal", "cooldown")
 		return nil

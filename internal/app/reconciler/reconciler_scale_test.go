@@ -41,7 +41,7 @@ func TestObserveAppliesScalingDecision(t *testing.T) {
 	sf := &scaleFake{svc: scaleSvc(2)}
 	mp := &observeProvider{val: 160} // 160/80 = 2x -> desired 4
 	logger := discardLogger()
-	guard := NewGuard(sf, NewCooldown(0, port.SystemClock{}), false, port.NopRecorder{}, logger) // dry-run OFF
+	guard := NewGuard(sf, NewCooldown(port.SystemClock{}), Cooldowns{}, false, port.NopRecorder{}, logger) // dry-run OFF
 	rec := New(sf, mp, guard, port.SystemClock{}, testHealThreshold, port.NopRecorder{}, logger)
 
 	rec.observe(context.Background())
@@ -58,7 +58,7 @@ func TestObserveDryRunSuppressesScale(t *testing.T) {
 	sf := &scaleFake{svc: scaleSvc(2)}
 	mp := &observeProvider{val: 160}
 	logger := discardLogger()
-	guard := NewGuard(sf, NewCooldown(0, port.SystemClock{}), true, port.NopRecorder{}, logger) // dry-run ON
+	guard := NewGuard(sf, NewCooldown(port.SystemClock{}), Cooldowns{}, true, port.NopRecorder{}, logger) // dry-run ON
 	rec := New(sf, mp, guard, port.SystemClock{}, testHealThreshold, port.NopRecorder{}, logger)
 
 	rec.observe(context.Background())
