@@ -42,6 +42,8 @@ type Config struct {
 	// PrometheusURL is the Prometheus base URL; required when
 	// MetricsProvider == ProviderPrometheus.
 	PrometheusURL string
+	// PrometheusTimeout bounds each PromQL query against PrometheusURL.
+	PrometheusTimeout time.Duration
 	// MetricsAddr is the listen address for the daemon's own /metrics endpoint.
 	MetricsAddr string
 }
@@ -49,14 +51,15 @@ type Config struct {
 // Default returns the configuration with all defaults applied.
 func Default() Config {
 	return Config{
-		PollInterval:    15 * time.Second,
-		Cooldown:        3 * time.Minute,
-		HealThreshold:   2 * time.Minute,
-		DryRun:          true,
-		LogLevel:        "info",
-		LogFormat:       "text",
-		MetricsProvider: ProviderDockerStats,
-		MetricsAddr:     ":9095",
+		PollInterval:      15 * time.Second,
+		Cooldown:          3 * time.Minute,
+		HealThreshold:     2 * time.Minute,
+		DryRun:            true,
+		LogLevel:          "info",
+		LogFormat:         "text",
+		MetricsProvider:   ProviderDockerStats,
+		PrometheusTimeout: 10 * time.Second,
+		MetricsAddr:       ":9095",
 	}
 }
 
@@ -81,6 +84,9 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("invalid metrics_provider %q (want %s|%s)",
 			c.MetricsProvider, ProviderDockerStats, ProviderPrometheus)
+	}
+	if c.PrometheusTimeout <= 0 {
+		return fmt.Errorf("prometheus_timeout must be > 0, got %s", c.PrometheusTimeout)
 	}
 	switch strings.ToLower(strings.TrimSpace(c.LogLevel)) {
 	case "debug", "info", "warn", "warning", "error":
@@ -109,6 +115,7 @@ func (c Config) LogValue() slog.Value {
 		slog.String("log_format", c.LogFormat),
 		slog.String("metrics_provider", c.MetricsProvider),
 		slog.String("prometheus_url", redactURL(c.PrometheusURL)),
+		slog.Duration("prometheus_timeout", c.PrometheusTimeout),
 		slog.String("metrics_addr", c.MetricsAddr),
 	)
 }
@@ -177,6 +184,13 @@ func LoadArgs(args []string, lookupEnv func(string) (string, bool)) (Config, err
 	if v, ok := lookupEnv("PROMETHEUS_URL"); ok {
 		c.PrometheusURL = v
 	}
+	if v, ok := lookupEnv("PROMETHEUS_TIMEOUT"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("env PROMETHEUS_TIMEOUT=%q: %w", v, err)
+		}
+		c.PrometheusTimeout = d
+	}
 	if v, ok := lookupEnv("METRICS_ADDR"); ok {
 		c.MetricsAddr = v
 	}
@@ -191,6 +205,7 @@ func LoadArgs(args []string, lookupEnv func(string) (string, bool)) (Config, err
 	logFormat := fs.String("log-format", c.LogFormat, "log format: text|json")
 	metricsProvider := fs.String("metrics-provider", c.MetricsProvider, "metrics source: dockerstats|prometheus")
 	prometheusURL := fs.String("prometheus-url", c.PrometheusURL, "Prometheus base URL (required when metrics-provider=prometheus)")
+	prometheusTimeout := fs.Duration("prometheus-timeout", c.PrometheusTimeout, "per-query timeout for PromQL requests")
 	metricsAddr := fs.String("metrics-addr", c.MetricsAddr, "listen address for the /metrics endpoint")
 
 	if err := fs.Parse(args); err != nil {
@@ -205,6 +220,7 @@ func LoadArgs(args []string, lookupEnv func(string) (string, bool)) (Config, err
 	c.LogFormat = *logFormat
 	c.MetricsProvider = *metricsProvider
 	c.PrometheusURL = *prometheusURL
+	c.PrometheusTimeout = *prometheusTimeout
 	c.MetricsAddr = *metricsAddr
 
 	if err := c.Validate(); err != nil {

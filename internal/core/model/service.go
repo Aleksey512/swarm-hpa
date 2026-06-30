@@ -14,6 +14,14 @@ type ServicePolicy struct {
 	Max     uint64
 	Metric  string
 	Target  float64
+	// Source selects the metric provider for this service: "dockerstats",
+	// "prometheus", or "" to use the daemon's global default. Resolved by the
+	// metrics Router.
+	Source string
+	// Query is the PromQL expression used when Source is "prometheus". Ignored
+	// by the dockerstats provider; required by the prometheus provider (which
+	// errors if it is empty).
+	Query string
 }
 
 // ManagedService is an opted-in service together with its current state and

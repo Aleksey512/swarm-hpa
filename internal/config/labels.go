@@ -15,6 +15,11 @@ const (
 	LabelMax     = "swarm.autoscaler.max"
 	LabelMetric  = "swarm.autoscaler.metric"
 	LabelTarget  = "swarm.autoscaler.target"
+	// LabelSource selects this service's metric provider: dockerstats|prometheus
+	// (empty = use the daemon's global default). Routed by the metrics Router.
+	LabelSource = "swarm.autoscaler.source"
+	// LabelQuery is the PromQL expression used when the source is prometheus.
+	LabelQuery = "swarm.autoscaler.query"
 )
 
 // ParsePolicy parses swarm.autoscaler.* labels into a ServicePolicy.
@@ -50,6 +55,8 @@ func ParsePolicy(labels map[string]string) (policy model.ServicePolicy, managed 
 		Max:     maxReplicas,
 		Metric:  labels[LabelMetric],
 		Target:  target,
+		Source:  labels[LabelSource],
+		Query:   labels[LabelQuery],
 	}
 	if err := validatePolicy(policy); err != nil {
 		return model.ServicePolicy{}, true, err
@@ -93,6 +100,12 @@ func validatePolicy(p model.ServicePolicy) error {
 	}
 	if p.Metric == "" {
 		return fmt.Errorf("%s: required", LabelMetric)
+	}
+	switch p.Source {
+	case "", ProviderDockerStats, ProviderPrometheus:
+		// empty = global default; otherwise must name a known provider.
+	default:
+		return fmt.Errorf("%s=%q: must be %s or %s", LabelSource, p.Source, ProviderDockerStats, ProviderPrometheus)
 	}
 	return nil
 }

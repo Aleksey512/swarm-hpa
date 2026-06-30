@@ -33,6 +33,50 @@ func TestParsePolicyValid(t *testing.T) {
 	}
 }
 
+func TestParsePolicySourceAndQuery(t *testing.T) {
+	cases := []struct {
+		name       string
+		mut        func(map[string]string)
+		wantSource string
+		wantQuery  string
+	}{
+		{
+			name:       "defaults: no source, no query",
+			mut:        nil,
+			wantSource: "",
+			wantQuery:  "",
+		},
+		{
+			name:       "explicit dockerstats source",
+			mut:        func(m map[string]string) { m[LabelSource] = ProviderDockerStats },
+			wantSource: ProviderDockerStats,
+		},
+		{
+			name: "prometheus source with query",
+			mut: func(m map[string]string) {
+				m[LabelSource] = ProviderPrometheus
+				m[LabelQuery] = `sum(rate(http_requests_total{service="web"}[1m]))`
+			},
+			wantSource: ProviderPrometheus,
+			wantQuery:  `sum(rate(http_requests_total{service="web"}[1m]))`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, managed, err := ParsePolicy(cloneWith(tc.mut))
+			if err != nil || !managed {
+				t.Fatalf("managed=%v err=%v", managed, err)
+			}
+			if p.Source != tc.wantSource {
+				t.Errorf("Source = %q, want %q", p.Source, tc.wantSource)
+			}
+			if p.Query != tc.wantQuery {
+				t.Errorf("Query = %q, want %q", p.Query, tc.wantQuery)
+			}
+		})
+	}
+}
+
 func TestParsePolicyNotOptedIn(t *testing.T) {
 	cases := map[string]map[string]string{
 		"no enabled label": {"other": "x"},
@@ -61,6 +105,7 @@ func TestParsePolicyInvalid(t *testing.T) {
 		"target negative": func(m map[string]string) { m[LabelTarget] = "-1" },
 		"non-numeric min": func(m map[string]string) { m[LabelMin] = "abc" },
 		"non-numeric tgt": func(m map[string]string) { m[LabelTarget] = "high" },
+		"unknown source":  func(m map[string]string) { m[LabelSource] = "graphite" },
 	}
 	for name, mut := range cases {
 		t.Run(name, func(t *testing.T) {

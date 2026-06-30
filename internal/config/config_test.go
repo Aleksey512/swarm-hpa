@@ -85,6 +85,32 @@ func TestLoadArgsHealThreshold(t *testing.T) {
 	}
 }
 
+func TestLoadArgsPrometheusTimeout(t *testing.T) {
+	// default
+	c, err := LoadArgs(nil, fakeEnv(nil))
+	if err != nil || c.PrometheusTimeout != 10*time.Second {
+		t.Fatalf("default prometheus_timeout: err=%v got=%s want=10s", err, c.PrometheusTimeout)
+	}
+	// env over default
+	c, err = LoadArgs(nil, fakeEnv(map[string]string{"PROMETHEUS_TIMEOUT": "3s"}))
+	if err != nil || c.PrometheusTimeout != 3*time.Second {
+		t.Fatalf("env prometheus_timeout: err=%v got=%s", err, c.PrometheusTimeout)
+	}
+	// flag over env
+	c, err = LoadArgs([]string{"--prometheus-timeout=1s"}, fakeEnv(map[string]string{"PROMETHEUS_TIMEOUT": "3s"}))
+	if err != nil || c.PrometheusTimeout != time.Second {
+		t.Fatalf("flag prometheus_timeout: err=%v got=%s", err, c.PrometheusTimeout)
+	}
+	// zero is rejected (a query timeout must be positive)
+	if _, err := LoadArgs([]string{"--prometheus-timeout=0"}, fakeEnv(nil)); err == nil {
+		t.Error("prometheus_timeout=0 must be rejected")
+	}
+	// malformed env duration is rejected
+	if _, err := LoadArgs(nil, fakeEnv(map[string]string{"PROMETHEUS_TIMEOUT": "soon"})); err == nil {
+		t.Error("malformed PROMETHEUS_TIMEOUT must be rejected")
+	}
+}
+
 func TestLoadArgsPrecedence(t *testing.T) {
 	cases := []struct {
 		name       string

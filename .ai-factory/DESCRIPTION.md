@@ -50,7 +50,8 @@ services explicitly marked for management are acted upon. Transparency beats
   vars
 - **Docker access:** Official Docker Go SDK (`github.com/docker/docker/client`, pinned `v28.5.2+incompatible`; option types in `api/types/swarm`)
 - **Metrics in (HPA signals):** Docker Engine stats API + Prometheus HTTP API
-  (PromQL), behind a `MetricsProvider` interface
+  (PromQL via the official `prometheus/client_golang` `api/prometheus/v1`
+  client), behind a `MetricsProvider` interface
 - **Metrics out (self-observability):** `prometheus/client_golang` exposing
   `/metrics`
 - **Logging:** `log/slog` (structured, configurable via `LOG_LEVEL`)
