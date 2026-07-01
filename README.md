@@ -66,6 +66,7 @@ docker service update \
 | [Metrics Providers](docs/metrics-providers.md) | Docker stats vs Prometheus, per-service routing, PromQL |
 | [Observability](docs/observability.md) | The daemon's own `/metrics` endpoint and metric catalog |
 | [Development](docs/development.md) | Build, test, the integration harness, and CI |
+| [Deployment](docs/deployment.md) | Container image, Swarm stack, least-privilege, upgrades |
 
 ## License
 

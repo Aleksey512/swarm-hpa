@@ -1,4 +1,4 @@
-[← Observability](observability.md) · [Back to README](../README.md)
+[← Observability](observability.md) · [Back to README](../README.md) · [Deployment →](deployment.md)
 
 # Development
 
@@ -99,4 +99,5 @@ test-integration` locally to reproduce the gate before pushing.
 ## See Also
 
 - [Getting Started](getting-started.md) — prerequisites, build, run, verify.
+- [Deployment](deployment.md) — package as an image and run it on a Swarm.
 - [Observability](observability.md) — the daemon's own `/metrics` endpoint.

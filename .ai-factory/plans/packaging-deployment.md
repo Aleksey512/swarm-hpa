@@ -56,8 +56,8 @@ Everything packaging-related is **absent**: no `Dockerfile`, `.dockerignore`, co
 <!-- Commit checkpoint: 61-62 -->
 
 ### Phase 3: Release + docs
-- [ ] Task 63: GHCR release workflow + hadolint — `.github/workflows/release.yml` (tags `v*` → buildx multi-arch `linux/amd64,linux/arm64` → push to `ghcr.io`, version from tag, `packages: write`); add a hadolint step (and optional push-less PR build) to `ci.yml`. `.github/workflows/{release.yml,ci.yml}`. (depends on 59)
-- [ ] Task 64: `docs/deployment.md` — build/publish, `docker stack deploy`, least-privilege (socket `:ro` caveat + proxy, exact API surface), config link, hardening recap, upgrade/rollback; wire into README table + `development.md` nav + `AGENTS.md`. (depends on 61, 62, 63)
+- [x] Task 63: GHCR release workflow + hadolint — `.github/workflows/release.yml` (tags `v*` → buildx multi-arch `linux/amd64,linux/arm64` → push to `ghcr.io`, version from tag, `packages: write`); add a hadolint step (and optional push-less PR build) to `ci.yml`. `.github/workflows/{release.yml,ci.yml}`. (depends on 59)
+- [x] Task 64: `docs/deployment.md` — build/publish, `docker stack deploy`, least-privilege (socket `:ro` caveat + proxy, exact API surface), config link, hardening recap, upgrade/rollback; wire into README table + `development.md` nav + `AGENTS.md`. (depends on 61, 62, 63)
 <!-- Commit checkpoint: 63-64 -->
 
 ## Definition of Done

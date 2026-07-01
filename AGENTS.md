@@ -44,9 +44,13 @@ source layout follows the Explicit Architecture (ports & adapters) in
 │   │   ├── metrics/         # provider factory + dockerstats (cpu/mem); prometheus → milestone 7
 │   │   └── observability/   # slog logging setup (live); /metrics endpoint (future)
 │   └── config/              # flag/env config + swarm.autoscaler.* label parsing
-├── Makefile                 # build/run/test/test-race/lint/fmt/vet/tidy/cover
+├── Makefile                 # build/run/test/test-race/test-integration/lint/fmt/cover + docker-build/run/push
 ├── .golangci.yml            # golangci-lint v2 config
 ├── go.mod                   # module github.com/Aleksey512/swarm-hpa
+├── Dockerfile               # multi-stage image (alpine, non-root, CGO-free static)
+├── .dockerignore            # trims the build context to go source
+├── deploy/                  # docker stack examples: stack.yml (direct socket) + stack.proxy.yml (least-privilege)
+├── .github/workflows/       # ci.yml (fmt/vet/lint/test/hadolint/build) + release.yml (GHCR image on v* tags)
 ├── .ai-factory/             # AI Factory context (DESCRIPTION, ARCHITECTURE, ROADMAP, config, rules, plans)
 ├── .claude/skills/          # aif-*, golang-*, prometheus-label-strategy, docker-swarm-go-sdk
 └── skills-lock.json         # skills.sh lockfile
@@ -85,6 +89,7 @@ source layout follows the Explicit Architecture (ports & adapters) in
 | Metrics Providers | docs/metrics-providers.md | Docker stats vs Prometheus, routing, PromQL |
 | Observability | docs/observability.md | The daemon's own /metrics endpoint |
 | Development | docs/development.md | Build, test, integration harness, CI |
+| Deployment | docs/deployment.md | Container image, Swarm stack, hardening |
 | Specification | .ai-factory/DESCRIPTION.md | What the daemon does and why |
 
 ## AI Context Files

@@ -64,6 +64,10 @@ services explicitly marked for management are acted upon. Transparency beats
   source + composition seam for an integration harness under the `integration`
   build tag); `go.uber.org/goleak` for goroutine-leak checks; GitHub Actions CI
   (`gofmt`/`vet`/`golangci-lint`/`go test -race`/coverage + integration)
+- **Packaging / deploy:** multi-stage `Dockerfile` (alpine, non-root, CGO-free
+  static, `--version` flag, `/metrics` healthcheck); `docker stack deploy`
+  examples in `deploy/` (direct socket + least-privilege `docker-socket-proxy`);
+  GHCR release workflow on `v*` tags (multi-arch `linux/amd64,arm64`)
 
 ## Architecture Notes
 

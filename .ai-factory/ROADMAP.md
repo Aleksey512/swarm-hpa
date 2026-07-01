@@ -14,7 +14,7 @@
 - [x] **Self-observability `/metrics`** — `prometheus/client_golang` endpoint exposing the daemon's decisions, scales applied, tasks healed, and errors; finalize structured slog fields
 - [x] **Scale stabilization** — separate scale-up/scale-down cooldowns, step limits, and stabilization windows to prevent flapping
 - [x] **Testing & resilience hardening** — table-driven tests for decision logic, fakes for ports, transient Docker/Prometheus error tolerance, goroutine-leak checks, integration test harness
-- [ ] **Packaging & deployment** — Dockerfile, least-privilege run/stack example, README/docs, build-time version embedding
+- [x] **Packaging & deployment** — Dockerfile, least-privilege run/stack example, README/docs, build-time version embedding
 
 ## Completed
 
@@ -30,3 +30,4 @@
 | Self-observability /metrics | 2026-06-30 |
 | Scale stabilization | 2026-06-30 |
 | Testing & resilience hardening | 2026-07-01 |
+| Packaging & deployment | 2026-07-01 |
