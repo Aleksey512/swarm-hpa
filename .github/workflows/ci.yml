@@ -28,9 +28,13 @@ jobs:
         run: make vet
 
       - name: Lint (golangci-lint v2)
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
-          version: latest
+          # v7 is the golangci-lint v2-capable action (v6 installs v1, which
+          # cannot read the v2 .golangci.yml and is built with go1.24 < go.mod
+          # 1.25.0). Pin an explicit v2 so CI never resolves to an incompatible
+          # build via "latest".
+          version: v2.12.2
 
       - name: Build
         run: make build
