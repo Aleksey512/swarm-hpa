@@ -1,6 +1,24 @@
-# Swarm HPA & Task Healer
+<p align="center">
+  <img src="docs/assets/banner.svg" alt="Swarm HPA &amp; Task Healer" width="840">
+</p>
 
-> Horizontal autoscaling and stuck-task healing for Docker Swarm — opt-in, dry-run by default, fully logged.
+<p align="center">
+  <a href="https://github.com/Aleksey512/swarm-hpa/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Aleksey512/swarm-hpa/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/Aleksey512/swarm-hpa/tags"><img alt="Release" src="https://img.shields.io/github/v/tag/Aleksey512/swarm-hpa?sort=semver&amp;label=release&amp;color=2496ED"></a>
+  <a href="https://hub.docker.com/r/mrframe/swarm-hpa"><img alt="Docker Hub version" src="https://img.shields.io/docker/v/mrframe/swarm-hpa?sort=semver&amp;logo=docker&amp;logoColor=white&amp;label=docker%20hub&amp;color=2496ED"></a>
+  <a href="https://hub.docker.com/r/mrframe/swarm-hpa"><img alt="Docker pulls" src="https://img.shields.io/docker/pulls/mrframe/swarm-hpa?logo=docker&amp;logoColor=white"></a>
+  <a href="https://hub.docker.com/r/mrframe/swarm-hpa/tags"><img alt="Image size" src="https://img.shields.io/docker/image-size/mrframe/swarm-hpa/latest?logo=docker&amp;logoColor=white&amp;label=image%20size"></a>
+  <br>
+  <img alt="Architectures" src="https://img.shields.io/badge/arch-amd64%20%7C%20arm64-2496ED?logo=docker&amp;logoColor=white">
+  <a href="go.mod"><img alt="Go version" src="https://img.shields.io/github/go-mod/go-version/Aleksey512/swarm-hpa?logo=go&amp;logoColor=white"></a>
+  <a href="https://goreportcard.com/report/github.com/Aleksey512/swarm-hpa"><img alt="Go Report Card" src="https://goreportcard.com/badge/github.com/Aleksey512/swarm-hpa"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/github/license/Aleksey512/swarm-hpa?color=blue"></a>
+</p>
+
+<p align="center">
+  <b>Horizontal autoscaling and stuck-task healing for Docker Swarm</b><br>
+  opt-in · dry-run by default · fully logged
+</p>
 
 A small Go daemon that adds two capabilities Swarm lacks out of the box: a
 Horizontal Pod Autoscaler analogue that scales opt-in services by a metric, and
@@ -45,6 +63,24 @@ docker service update \
 - **Opt-in via labels** — a service is touched only when it carries `swarm.autoscaler.*` labels.
 - **Dry-run by default** — out of the box the daemon only logs intended actions.
 - **Safe mutations** — one guarded path enforces dry-run + per-service cooldown; replica changes are clamped to `min`/`max`.
+
+## How it works
+
+A single reconcile loop runs every `--poll-interval`: **observe** the Swarm,
+**decide** in a pure core, then **act** through one guarded path (dry-run +
+opt-in labels + cooldown).
+
+```mermaid
+flowchart LR
+  M["MetricsProvider<br/>Docker stats · Prometheus"]
+  subgraph loop["Reconcile loop · every --poll-interval"]
+    direction LR
+    O["Observe<br/>services · tasks · nodes · labels"] --> D["Decide<br/>pure core"] --> A["Act<br/>dry-run · opt-in · cooldown"]
+  end
+  M -. metric .-> D
+  A -->|scale| S["ServiceUpdate<br/>replicas → min..max"]
+  A -->|heal| H["ForceUpdate<br/>unstick pending task"]
+```
 
 ## Example
 
