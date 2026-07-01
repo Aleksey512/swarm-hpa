@@ -67,11 +67,14 @@ Expected daemon logs:
 
 ```
 level=INFO msg="observed managed services" count=1
-level=INFO msg="scaling decision" service=demo_web current=2 desired=4 value=... target=50
-level=INFO msg="dry-run: would scale" service=demo_web ...
+level=INFO msg="scaling decision" service=demo_web metric=cpu value=~50 target=20 current=2 desired=5
+level=INFO msg="dry-run: would scale" service=demo_web from=2 to=5 direction=up
 ```
 
-Enable real scaling once the logs look right: `make run ARGS="--dry-run=false"`.
+The demo `target=20` is intentionally below the per-task CPU ceiling (each task is
+capped at `cpus: "0.50"`, so the metric plateaus near 50% under load) — that gap is
+what makes the service visibly scale out. Enable real scaling once the logs look
+right: `make run ARGS="--dry-run=false"`.
 Docker stats is **local-node only** — on a multi-node swarm run the daemon where
 the tasks are, or use the Prometheus example. Tear down: `docker stack rm demo`.
 

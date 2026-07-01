@@ -16,8 +16,8 @@
 #   examples/cpu-autoscale/loadgen.sh
 # Expect the daemon to log lines like:
 #   level=INFO msg="observed managed services" count=1
-#   level=INFO msg="scaling decision" service=demo_web current=2 desired=4 value=... target=50
-#   level=INFO msg="dry-run: would scale" service=demo_web ...
+#   level=INFO msg="scaling decision" service=demo_web metric=cpu value=~50 target=20 current=2 desired=5
+#   level=INFO msg="dry-run: would scale" service=demo_web from=2 to=5 direction=up
 # Enable real scaling once the dry-run logs look right:
 #   make run ARGS="--dry-run=false"
 #
@@ -58,7 +58,11 @@ services:
         swarm.autoscaler.min: "2"          # never scale below this
         swarm.autoscaler.max: "8"          # never scale above this
         swarm.autoscaler.metric: "cpu"     # cpu | memory (Docker stats provider)
-        swarm.autoscaler.target: "50"      # target avg CPU %; lower => scales out sooner
+        swarm.autoscaler.target: "20"      # target avg CPU %. Keep it BELOW the per-task CPU
+                                           # ceiling implied by resources.limits: cpus "0.50"
+                                           # makes the dockerstats value plateau ~50% under load,
+                                           # so target=50 would sit at the ceiling (desired≈current,
+                                           # no visible scale-out). 20 lets achievable load cross it.
         # swarm.autoscaler.source omitted => uses the daemon's --metrics-provider
         # (default: dockerstats). No source/query needed for the CPU demo.
 
