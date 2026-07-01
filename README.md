@@ -59,8 +59,8 @@ docker service update \
 
 - **Horizontal autoscaling** of opt-in services between `min`/`max` by a target metric and threshold.
 - **Pluggable metrics**, chosen per service: **Docker stats** (CPU/memory, no deps) or **Prometheus** (arbitrary PromQL — RPS, p95 latency, queue depth).
-- **Stuck-task healer** — force-updates a service only when the precise stuck-pending signature holds and the constrained node has recovered.
-- **Opt-in via labels** — a service is touched only when it carries `swarm.autoscaler.*` labels.
+- **Stuck-task healer** — force-updates a service only when the precise stuck-pending signature holds and the constrained node has recovered. Opt in independently of autoscaling with `swarm.autoscaler.heal=true`, so a placement-pinned stateful singleton can be healed without being autoscaled.
+- **Opt-in via labels** — a service is touched only when it carries `swarm.autoscaler.*` labels (`enabled=true` for autoscaling, `heal=true` for healing).
 - **Dry-run by default** — out of the box the daemon only logs intended actions.
 - **Safe mutations** — one guarded path enforces dry-run + per-service cooldown; replica changes are clamped to `min`/`max`.
 

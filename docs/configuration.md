@@ -31,23 +31,49 @@ logged at startup (`msg="effective configuration"`); any credentials in
 
 ## Service labels (`swarm.autoscaler.*`)
 
-A service is managed **only** when it carries `swarm.autoscaler.enabled=true`.
-This is the project's hard opt-in boundary — unlabeled services are never
-mutated. A service that opts in but is misconfigured is logged and skipped, never
-fatal.
+A service is managed **only** when it opts in via a label — either
+`swarm.autoscaler.enabled=true` (autoscaling) or `swarm.autoscaler.heal=true`
+(healing). This is the project's hard opt-in boundary — unlabeled services are
+never mutated. A service that opts in but is misconfigured is logged and skipped,
+never fatal.
+
+The `min`/`max`/`metric`/`target` labels are **required for autoscaling**
+(`enabled=true`); a heal-only service needs none of them.
 
 | Label | Required | Description |
 |-------|----------|-------------|
-| `swarm.autoscaler.enabled` | **yes** | Must be exactly `true` to opt in. |
-| `swarm.autoscaler.min` | **yes** | Minimum replicas (unsigned integer). |
-| `swarm.autoscaler.max` | **yes** | Maximum replicas (`>= 1`, and `>= min`). |
-| `swarm.autoscaler.metric` | **yes** | `cpu` \| `memory` for Docker stats; a logical name (e.g. `rps`) for Prometheus. |
-| `swarm.autoscaler.target` | **yes** | Target value for the metric (float, `> 0`). |
+| `swarm.autoscaler.enabled` | for autoscaling | Must be exactly `true` to opt into autoscaling. |
+| `swarm.autoscaler.min` | for autoscaling | Minimum replicas (unsigned integer). |
+| `swarm.autoscaler.max` | for autoscaling | Maximum replicas (`>= 1`, and `>= min`). |
+| `swarm.autoscaler.metric` | for autoscaling | `cpu` \| `memory` for Docker stats; a logical name (e.g. `rps`) for Prometheus. |
+| `swarm.autoscaler.target` | for autoscaling | Target value for the metric (float, `> 0`). |
 | `swarm.autoscaler.source` | no | `dockerstats` \| `prometheus`. Empty = use the daemon's `--metrics-provider`. |
 | `swarm.autoscaler.query` | no | PromQL expression, used when the source is `prometheus`. Supports `$SERVICE` / `$SERVICE_ID` expansion. |
+| `swarm.autoscaler.heal` | no | Opt into stuck-pending healing independently of autoscaling (see below). |
 
 See [Metrics Providers](metrics-providers.md) for how `source` and `query` drive
 the Prometheus path.
+
+### Healing opt-in (`swarm.autoscaler.heal`)
+
+Healing (recovering tasks stuck `pending` under a placement constraint after a
+node recovers — [moby/moby#42215](https://github.com/moby/moby/issues/42215)) is
+a separate concern from autoscaling. The `heal` label lets you enable it on its
+own — useful for **placement-pinned stateful singletons** (a database, a
+per-node RabbitMQ) that should be healed but must never be autoscaled.
+
+| Labels on the service | Behaviour |
+|-----------------------|-----------|
+| `enabled=true` (+ a valid policy) | autoscale **and** heal — `heal` defaults to the enabled state |
+| `heal=true` alone | **heal-only** — no `min`/`max`/`metric`/`target` required; the service is never scaled |
+| `enabled=true` + `heal=false` | autoscale only — healing disabled for this service |
+
+Backward compatible: an existing `enabled=true` service keeps both behaviours.
+
+```bash
+# Heal a placement-pinned RabbitMQ node without autoscaling it:
+docker service update --label-add swarm.autoscaler.heal=true rabbitmq-01
+```
 
 ## How decisions are made
 

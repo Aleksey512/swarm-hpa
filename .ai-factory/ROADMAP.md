@@ -16,6 +16,10 @@
 - [x] **Testing & resilience hardening** — table-driven tests for decision logic, fakes for ports, transient Docker/Prometheus error tolerance, goroutine-leak checks, integration test harness
 - [x] **Packaging & deployment** — Dockerfile, least-privilege run/stack example, README/docs, build-time version embedding
 
+## v0.2.0
+
+- [x] **Heal-only opt-in** — `swarm.autoscaler.heal` label decouples stuck-pending healing from autoscaling: heal-only (no autoscaler policy) for placement-pinned stateful singletons, `heal=false` to opt an autoscaled service out of healing; backward compatible
+
 ## Completed
 
 | Milestone | Date |
@@ -31,3 +35,4 @@
 | Scale stabilization | 2026-06-30 |
 | Testing & resilience hardening | 2026-07-01 |
 | Packaging & deployment | 2026-07-01 |
+| Heal-only opt-in (v0.2.0) | 2026-07-01 |
