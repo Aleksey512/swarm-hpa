@@ -3,6 +3,10 @@
 #   IMAGE=ghcr.io/aleksey512/swarm-hpa TAG=latest \
 #     docker stack deploy -c deploy/stack.proxy.yml swarm-hpa
 #
+# The image is also mirrored to Docker Hub — swap IMAGE to pull from there:
+#   IMAGE=docker.io/mrframe/swarm-hpa TAG=0.1.0 \
+#     docker stack deploy -c deploy/stack.proxy.yml swarm-hpa
+#
 # tecnativa/docker-socket-proxy exposes ONLY the API surface swarm-hpa needs
 # (services/tasks/nodes + POST for ServiceUpdate) over TCP. The daemon then runs
 # as NON-root with no socket mount at all. Only the proxy must sit on a manager

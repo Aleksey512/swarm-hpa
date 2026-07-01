@@ -3,6 +3,10 @@
 #   IMAGE=ghcr.io/aleksey512/swarm-hpa TAG=latest \
 #     docker stack deploy -c deploy/stack.yml swarm-hpa
 #
+# The image is also mirrored to Docker Hub — swap IMAGE to pull from there:
+#   IMAGE=docker.io/mrframe/swarm-hpa TAG=0.1.0 \
+#     docker stack deploy -c deploy/stack.yml swarm-hpa
+#
 # The daemon MUST run on a manager node (the Swarm services/tasks/nodes APIs are
 # manager-only). Dry-run is ON by default — set DRY_RUN=false to enable real
 # scaling/healing. For a genuinely non-root, least-privilege setup, use

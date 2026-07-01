@@ -16,6 +16,13 @@ make build                      # → bin/swarm-hpa
 ./bin/swarm-hpa                 # dry-run is ON by default: nothing is mutated
 ```
 
+Prefer a prebuilt image? Every release publishes a multi-arch image to GHCR
+(primary) and Docker Hub:
+
+```bash
+docker run --rm ghcr.io/aleksey512/swarm-hpa:latest --version   # or docker.io/mrframe/swarm-hpa:latest
+```
+
 Mark a service for management and watch the daemon decide (still dry-run):
 
 ```bash

@@ -27,14 +27,37 @@ make docker-build IMAGE=registry.example.com/swarm-hpa
 
 ## Publish
 
-Pushing a `v*` git tag triggers `.github/workflows/release.yml`, which builds a
-multi-arch image (`linux/amd64`, `linux/arm64`) and pushes it to **GHCR**:
+Pushing a `v*` git tag triggers `.github/workflows/release.yml`, which builds one
+multi-arch image (`linux/amd64`, `linux/arm64`) and pushes it to **both**
+registries — **GHCR** (primary) and **Docker Hub** (mirror):
 
 ```bash
-git tag v1.0.0 && git push origin v1.0.0   # → ghcr.io/<owner>/swarm-hpa:1.0.0 + :latest
+git tag v0.1.0 && git push origin v0.1.0
+# → ghcr.io/aleksey512/swarm-hpa:0.1.0 + :0.1 + :latest
+# → docker.io/mrframe/swarm-hpa:0.1.0 + :0.1 + :latest
 ```
 
-For a manual push: `make docker-push` (after `make docker-build`).
+**Required secrets.** The Docker Hub push needs two GitHub Actions repository
+secrets (Settings → Secrets and variables → Actions), or the release fails at its
+Docker Hub login step:
+
+| Secret | Value |
+|--------|-------|
+| `DOCKERHUB_USERNAME` | Docker Hub login (`mrframe`) |
+| `DOCKERHUB_TOKEN` | a Docker Hub **Read & Write** access token |
+
+GHCR needs no extra secret — it authenticates with the built-in `GITHUB_TOKEN`.
+
+**Verify the release** once the workflow is green — pull and run `--version` from
+each registry:
+
+```bash
+docker run --rm ghcr.io/aleksey512/swarm-hpa:0.1.0 --version
+docker run --rm docker.io/mrframe/swarm-hpa:0.1.0 --version
+```
+
+For a manual push: `make docker-push` (after `make docker-build`), optionally with
+`IMAGE=docker.io/mrframe/swarm-hpa` to target Docker Hub instead of GHCR.
 
 ## Deploy to Swarm
 
