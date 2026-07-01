@@ -60,6 +60,10 @@ services explicitly marked for management are acted upon. Transparency beats
 - **Configuration:** Docker service labels (`swarm.autoscaler.*`) for per-service
   policy; daemon-level flags/env for poll interval, Prometheus URL, dry-run, log
   level
+- **Testing / CI:** stdlib `testing` (table-driven, port fakes, an injectable tick
+  source + composition seam for an integration harness under the `integration`
+  build tag); `go.uber.org/goleak` for goroutine-leak checks; GitHub Actions CI
+  (`gofmt`/`vet`/`golangci-lint`/`go test -race`/coverage + integration)
 
 ## Architecture Notes
 

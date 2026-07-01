@@ -57,7 +57,7 @@ func run() int {
 		logger.Error("failed to create docker client", "err", err)
 		return 1
 	}
-	defer cli.Close()
+	defer func() { _ = cli.Close() }()
 
 	swarmCtl := swarmadapter.New(cli, logger)
 	metricsProvider, err := metrics.New(cfg, cli, logger)

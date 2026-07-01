@@ -84,6 +84,7 @@ source layout follows the Explicit Architecture (ports & adapters) in
 | Configuration | docs/configuration.md | Daemon flags/env and service labels |
 | Metrics Providers | docs/metrics-providers.md | Docker stats vs Prometheus, routing, PromQL |
 | Observability | docs/observability.md | The daemon's own /metrics endpoint |
+| Development | docs/development.md | Build, test, integration harness, CI |
 | Specification | .ai-factory/DESCRIPTION.md | What the daemon does and why |
 
 ## AI Context Files

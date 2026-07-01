@@ -131,7 +131,7 @@ func (p *Provider) readStats(ctx context.Context, containerID string) (container
 	if err != nil {
 		return container.StatsResponse{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	dec := json.NewDecoder(resp.Body)
 	var last container.StatsResponse

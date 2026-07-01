@@ -86,17 +86,28 @@ func (r *Recorder) Handler() http.Handler {
 	return promhttp.HandlerFor(r.registry, promhttp.HandlerOpts{})
 }
 
-func (r *Recorder) ReconcileTick()         { r.reconcileTotal.Inc() }
+// ReconcileTick increments the completed-observe-pass counter.
+func (r *Recorder) ReconcileTick() { r.reconcileTotal.Inc() }
+
+// ObservedServices sets the managed-services gauge to the number seen this pass.
 func (r *Recorder) ObservedServices(n int) { r.managedServices.Set(float64(n)) }
+
+// ScaleApplied increments the applied-scales counter for the service.
 func (r *Recorder) ScaleApplied(service string) {
 	r.scalesTotal.WithLabelValues(service).Inc()
 }
+
+// HealApplied increments the applied-heals counter for the service.
 func (r *Recorder) HealApplied(service string) {
 	r.healsTotal.WithLabelValues(service).Inc()
 }
+
+// ActionSuppressed increments the suppressed-actions counter, labeled by action and reason.
 func (r *Recorder) ActionSuppressed(action, reason string) {
 	r.suppressedTotal.WithLabelValues(action, reason).Inc()
 }
+
+// Error increments the recoverable-error counter for the given pipeline stage.
 func (r *Recorder) Error(stage string) {
 	r.errorsTotal.WithLabelValues(stage).Inc()
 }

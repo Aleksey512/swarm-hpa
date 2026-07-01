@@ -60,8 +60,8 @@ So this plan targets the concrete gaps the milestone still names:
 <!-- Commit checkpoint: 53-55 -->
 
 ### Phase 4: Resilience harness + CI
-- [ ] Task 56: Transient-error resilience suite (burst errors per stage services/nodes/tasks/metric → logged-and-swallowed + `recorder.Error(stage)` counts → recovery on next clean tick) plus a `//go:build integration` end-to-end harness wiring the daemon via the cmd seam with fakes + injected tick source: start→ticks→cancel→clean exit, no leaked goroutines. `internal/app/reconciler/resilience_test.go`, `cmd/swarm-hpa/integration_test.go`. (depends on 49, 50, 51)
-- [ ] Task 57: GitHub Actions CI (`.github/workflows/ci.yml`, push + PR): gofmt check, `make vet`, `make lint`, `make test-race`, `make cover`, and `go test -tags integration ./...`; add a `make test-integration` target. `.github/workflows/ci.yml`, `Makefile`. (depends on 56)
+- [x] Task 56: Transient-error resilience suite (burst errors per stage services/nodes/tasks/metric → logged-and-swallowed + `recorder.Error(stage)` counts → recovery on next clean tick) plus a `//go:build integration` end-to-end harness wiring the daemon via the cmd seam with fakes + injected tick source: start→ticks→cancel→clean exit, no leaked goroutines. `internal/app/reconciler/resilience_test.go`, `cmd/swarm-hpa/integration_test.go`. (depends on 49, 50, 51)
+- [x] Task 57: GitHub Actions CI (`.github/workflows/ci.yml`, push + PR): gofmt check, `make vet`, `make lint`, `make test-race`, `make cover`, and `go test -tags integration ./...`; add a `make test-integration` target. `.github/workflows/ci.yml`, `Makefile`. (depends on 56)
 <!-- Commit checkpoint: 56-57 -->
 
 ## Definition of Done

@@ -9,7 +9,7 @@ LDFLAGS  := -ldflags "-s -w -X main.version=$(VERSION)"
 GOLANGCI := golangci-lint
 
 .DEFAULT_GOAL := build
-.PHONY: build run test test-race cover lint fmt vet tidy clean help
+.PHONY: build run test test-race test-integration cover lint fmt fmt-check vet tidy clean help
 
 build: ## Build the daemon binary into bin/
 	@mkdir -p $(BIN_DIR)
@@ -24,6 +24,9 @@ test: ## Run unit tests
 test-race: ## Run unit tests with the race detector
 	go test -race $(PKGS)
 
+test-integration: ## Run all tests including the integration-tagged harness
+	go test -tags integration -race $(PKGS)
+
 cover: ## Run tests and print a coverage summary
 	go test -coverprofile=coverage.out $(PKGS)
 	go tool cover -func=coverage.out
@@ -36,6 +39,12 @@ lint: ## Run golangci-lint (v2)
 
 fmt: ## Format the code (gofmt -s)
 	gofmt -s -w .
+
+fmt-check: ## Verify all files are gofmt-clean (CI gate; non-mutating)
+	@out=$$(gofmt -s -l .); \
+	if [ -n "$$out" ]; then \
+		echo "gofmt needed on:"; echo "$$out"; exit 1; \
+	fi
 
 vet: ## Run go vet
 	go vet $(PKGS)

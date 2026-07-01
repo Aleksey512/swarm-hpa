@@ -29,9 +29,20 @@ type NopRecorder struct{}
 // compile-time proof the no-op satisfies the interface.
 var _ Recorder = NopRecorder{}
 
-func (NopRecorder) ReconcileTick()                  {}
-func (NopRecorder) ObservedServices(int)            {}
-func (NopRecorder) ScaleApplied(string)             {}
-func (NopRecorder) HealApplied(string)              {}
+// ReconcileTick does nothing.
+func (NopRecorder) ReconcileTick() {}
+
+// ObservedServices does nothing.
+func (NopRecorder) ObservedServices(int) {}
+
+// ScaleApplied does nothing.
+func (NopRecorder) ScaleApplied(string) {}
+
+// HealApplied does nothing.
+func (NopRecorder) HealApplied(string) {}
+
+// ActionSuppressed does nothing.
 func (NopRecorder) ActionSuppressed(string, string) {}
-func (NopRecorder) Error(string)                    {}
+
+// Error does nothing.
+func (NopRecorder) Error(string) {}
