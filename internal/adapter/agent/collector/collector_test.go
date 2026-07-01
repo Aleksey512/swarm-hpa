@@ -24,15 +24,15 @@ func (c fakeClock) Now() time.Time { return c.t }
 type fakeDockerAPI struct {
 	info       system.Info
 	infoErr    error
-	tasks      []dswarm.Task
+	containers []container.Summary
 	statsByCID map[string]container.StatsResponse
 	statsErr   map[string]error
 }
 
 func (f *fakeDockerAPI) Info(context.Context) (system.Info, error) { return f.info, f.infoErr }
 
-func (f *fakeDockerAPI) TaskList(context.Context, dswarm.TaskListOptions) ([]dswarm.Task, error) {
-	return f.tasks, nil
+func (f *fakeDockerAPI) ContainerList(context.Context, container.ListOptions) ([]container.Summary, error) {
+	return f.containers, nil
 }
 
 func (f *fakeDockerAPI) ContainerStats(_ context.Context, cid string, _ bool) (container.StatsResponseReader, error) {
@@ -64,11 +64,15 @@ func statsSample(memUsage, memLimit uint64) container.StatsResponse {
 	// CPU%: (200/1000)*2*100 = 40
 }
 
-func taskOn(taskID, serviceID, cid string) dswarm.Task {
-	return dswarm.Task{
-		ID:        taskID,
-		ServiceID: serviceID,
-		Status:    dswarm.TaskStatus{ContainerStatus: &dswarm.ContainerStatus{ContainerID: cid}},
+// taskContainer builds a running Swarm task container carrying the service/task
+// labels the collector reads (container ID = cid).
+func taskContainer(taskID, serviceID, cid string) container.Summary {
+	return container.Summary{
+		ID: cid,
+		Labels: map[string]string{
+			labelTaskID:    taskID,
+			labelServiceID: serviceID,
+		},
 	}
 }
 
@@ -77,9 +81,9 @@ func approx(a, b float64) bool { d := a - b; return d < 1e-9 && d > -1e-9 }
 func TestCollectAggregatesNodeAndTasks(t *testing.T) {
 	fake := &fakeDockerAPI{
 		info: system.Info{NCPU: 4, MemTotal: 2000, Name: "worker-1", Swarm: dswarm.Info{NodeID: "node-a"}},
-		tasks: []dswarm.Task{
-			taskOn("t1", "svc-web", "c1"),
-			taskOn("t2", "svc-api", "c2"),
+		containers: []container.Summary{
+			taskContainer("t1", "svc-web", "c1"),
+			taskContainer("t2", "svc-api", "c2"),
 		},
 		statsByCID: map[string]container.StatsResponse{
 			"c1": statsSample(500, 1000), // cpu 40, mem 50%, 500 bytes
@@ -120,10 +124,9 @@ func TestCollectAggregatesNodeAndTasks(t *testing.T) {
 func TestCollectSkipsUnreadableTaskButKeepsOthers(t *testing.T) {
 	fake := &fakeDockerAPI{
 		info: system.Info{NCPU: 2, MemTotal: 1000, Name: "w", Swarm: dswarm.Info{NodeID: "n"}},
-		tasks: []dswarm.Task{
-			taskOn("t1", "svc", "c1"),
-			taskOn("t2", "svc", "remote"),
-			taskOn("t3", "svc", ""), // no container yet — silently skipped
+		containers: []container.Summary{
+			taskContainer("t1", "svc", "c1"),
+			taskContainer("t2", "svc", "remote"), // stats error → skipped
 		},
 		statsByCID: map[string]container.StatsResponse{"c1": statsSample(400, 1000)},
 		statsErr:   map[string]error{"remote": errors.New("container stats unavailable")},

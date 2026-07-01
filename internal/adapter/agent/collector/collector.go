@@ -1,8 +1,9 @@
 // Package collector is the agent-side adapter that samples the LOCAL node's
 // per-task and aggregate CPU/memory load and builds a model.AgentReport for the
-// manager. It runs on every node (deployed mode: global), so its ContainerStats
-// calls always target containers on the same host — the exact reads the
-// manager-bound dockerstats provider cannot do for remote nodes.
+// manager. It runs on every node (deployed mode: global), so it enumerates task
+// containers via the LOCAL container API (ContainerList) — NOT the Swarm TaskList
+// API, which is manager-only and would fail on worker nodes — and reads their
+// stats locally.
 package collector
 
 import (
@@ -13,7 +14,6 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
-	dswarm "github.com/docker/docker/api/types/swarm"
 	"github.com/docker/docker/api/types/system"
 	"github.com/docker/docker/client"
 
@@ -26,11 +26,21 @@ import (
 // report cycle.
 const callTimeout = 10 * time.Second
 
+// Swarm stamps these labels on every task container; the agent reads them to map
+// a local container back to its service and task without the manager-only Swarm
+// API.
+const (
+	labelServiceID = "com.docker.swarm.service.id"
+	labelTaskID    = "com.docker.swarm.task.id"
+)
+
 // dockerAPI is the subset of the Docker client the collector uses against the
-// LOCAL daemon. Narrowing it to an interface lets tests substitute a fake.
+// LOCAL daemon. Every call here is served by any node's daemon (manager or
+// worker) — no Swarm cluster-state APIs. Narrowing it to an interface lets tests
+// substitute a fake.
 type dockerAPI interface {
 	Info(ctx context.Context) (system.Info, error)
-	TaskList(ctx context.Context, options dswarm.TaskListOptions) ([]dswarm.Task, error)
+	ContainerList(ctx context.Context, options container.ListOptions) ([]container.Summary, error)
 	ContainerStats(ctx context.Context, containerID string, stream bool) (container.StatsResponseReader, error)
 }
 
@@ -56,8 +66,9 @@ func New(cli *client.Client, nodeIDOverride string, clock port.Clock, logger *sl
 }
 
 // Collect samples the local node once and returns a report. It never fails on a
-// single unreadable task (that task is logged at WARN and skipped); it returns
-// an error only when the node identity or capacity cannot be resolved at all.
+// single unreadable container (that container is logged at WARN and skipped); it
+// returns an error only when the node identity or the container listing cannot
+// be resolved at all.
 func (c *Collector) Collect(ctx context.Context) (model.AgentReport, error) {
 	infoCtx, cancel := context.WithTimeout(ctx, callTimeout)
 	info, err := c.cli.Info(infoCtx)
@@ -74,30 +85,29 @@ func (c *Collector) Collect(ctx context.Context) (model.AgentReport, error) {
 		return model.AgentReport{}, fmt.Errorf("collector: node id unavailable (is this node part of a swarm?)")
 	}
 
-	tasks, err := c.listLocalTasks(ctx, nodeID)
+	containers, err := c.listLocalTaskContainers(ctx)
 	if err != nil {
 		return model.AgentReport{}, err
 	}
 
-	metrics := make([]model.TaskMetric, 0, len(tasks))
+	metrics := make([]model.TaskMetric, 0, len(containers))
 	var sumCPU, sumMemBytes float64
-	for _, t := range tasks {
-		cid := statsutil.ContainerID(t)
-		if cid == "" {
-			continue
-		}
-		stats, err := statsutil.ReadStats(ctx, c.cli, cid, callTimeout)
+	for _, ct := range containers {
+		taskID := ct.Labels[labelTaskID]
+		serviceID := ct.Labels[labelServiceID]
+
+		stats, err := statsutil.ReadStats(ctx, c.cli, ct.ID, callTimeout)
 		if err != nil {
-			c.logger.Warn("collector: skipping task (local stats unavailable)",
-				"node", nodeID, "task", t.ID, "container", cid, "err", err)
+			c.logger.Warn("collector: skipping container (local stats unavailable)",
+				"node", nodeID, "task", taskID, "container", ct.ID, "err", err)
 			continue
 		}
 
 		cpu, cpuOK := statsutil.CPUPercent(stats)
 		mem, memOK := statsutil.MemPercent(stats)
 		metrics = append(metrics, model.TaskMetric{
-			TaskID:     t.ID,
-			ServiceID:  t.ServiceID,
+			TaskID:     taskID,
+			ServiceID:  serviceID,
 			CPUPercent: cpu,
 			MemPercent: mem,
 		})
@@ -108,7 +118,7 @@ func (c *Collector) Collect(ctx context.Context) (model.AgentReport, error) {
 			sumMemBytes += statsutil.MemUsageBytes(stats)
 		}
 		c.logger.Debug("collector: task metric",
-			"node", nodeID, "task", t.ID, "service", t.ServiceID,
+			"node", nodeID, "task", taskID, "service", serviceID,
 			"cpu_pct", cpu, "mem_pct", mem)
 	}
 
@@ -140,18 +150,21 @@ func (c *Collector) Collect(ctx context.Context) (model.AgentReport, error) {
 	return report, nil
 }
 
-// listLocalTasks returns the desired-state-running tasks scheduled on this node.
-func (c *Collector) listLocalTasks(ctx context.Context, nodeID string) ([]dswarm.Task, error) {
+// listLocalTaskContainers returns the running Swarm task containers on this node,
+// via the LOCAL container API (works on manager and worker nodes alike). Only
+// containers carrying the Swarm task-id label are returned, so plain (non-Swarm)
+// containers on the host are ignored.
+func (c *Collector) listLocalTaskContainers(ctx context.Context) ([]container.Summary, error) {
 	listCtx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 
 	f := filters.NewArgs(
-		filters.Arg("node", nodeID),
-		filters.Arg("desired-state", "running"),
+		filters.Arg("status", "running"),
+		filters.Arg("label", labelTaskID),
 	)
-	tasks, err := c.cli.TaskList(listCtx, dswarm.TaskListOptions{Filters: f})
+	containers, err := c.cli.ContainerList(listCtx, container.ListOptions{Filters: f})
 	if err != nil {
-		return nil, fmt.Errorf("collector: task list (node %s): %w", nodeID, err)
+		return nil, fmt.Errorf("collector: container list: %w", err)
 	}
-	return tasks, nil
+	return containers, nil
 }
