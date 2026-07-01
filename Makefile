@@ -7,6 +7,9 @@ PKGS     := ./...
 VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS  := -ldflags "-s -w -X main.version=$(VERSION)"
 GOLANGCI := golangci-lint
+# Default registry is GHCR. Releases (release.yml) also mirror to Docker Hub.
+# To build/push manually to Docker Hub instead, override IMAGE:
+#   make docker-build docker-push IMAGE=docker.io/mrframe/swarm-hpa
 IMAGE    ?= ghcr.io/aleksey512/swarm-hpa
 
 .DEFAULT_GOAL := build

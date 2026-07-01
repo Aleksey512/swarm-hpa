@@ -30,12 +30,25 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Docker Hub is a mirror of GHCR (GHCR stays the primary registry).
+      # Requires repo secrets DOCKERHUB_USERNAME + DOCKERHUB_TOKEN (Read & Write
+      # access token). Without them this step fails — set them before tagging.
+      # No `registry:` → defaults to docker.io.
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          # metadata-action lowercases the repository name for GHCR.
-          images: ghcr.io/${{ github.repository }}
+          # One build → both registries. metadata-action lowercases the repo
+          # name for GHCR and fans every tag rule out to each image below.
+          images: |
+            ghcr.io/${{ github.repository }}
+            docker.io/mrframe/swarm-hpa
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
