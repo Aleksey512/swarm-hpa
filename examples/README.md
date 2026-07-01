@@ -2,16 +2,18 @@
 
 # Examples
 
-Runnable, self-contained demos of the three things swarm-hpa does: CPU
-autoscaling, Prometheus-driven autoscaling, and stuck-task healing. Each example
-deploys a **target workload**; you run the daemon alongside it and watch it
-decide.
+Runnable, self-contained demos of what swarm-hpa does: single-node CPU
+autoscaling, Prometheus-driven autoscaling, stuck-task healing, and — via the
+v0.3.0 manager/agent fleet — cluster-wide autoscaling and load-aware
+rebalancing. Each example deploys a **target workload**; you run the daemon
+alongside it (or, for the agents demo, inside the cluster) and watch it decide.
 
 | Example | Demonstrates | Provider |
 |---------|--------------|----------|
 | [`cpu-autoscale/`](cpu-autoscale/) | Scale out under CPU load | Docker stats |
 | [`prometheus-autoscale/`](prometheus-autoscale/) | Scale on requests/sec per replica | Prometheus (PromQL) |
 | [`healer/`](healer/) | Recover a task stuck `pending` after a node recovers | — |
+| [`agents/`](agents/) | Cluster-wide autoscaling + load-aware rebalancing | Agents (fleet) |
 
 ## The one rule that trips everyone up
 
@@ -49,6 +51,12 @@ To run it *inside* the cluster instead, deploy [`deploy/stack.yml`](../deploy/st
 (or the least-privilege [`deploy/stack.proxy.yml`](../deploy/stack.proxy.yml)) and
 set the same flags via env (`DRY_RUN`, `PROMETHEUS_URL`, `LOG_LEVEL`). See
 [Deployment](../docs/deployment.md).
+
+The **agents demo (§4) is different**: it runs the daemon *in-cluster* as a
+`manager` service plus a per-node `agent` service (the agents must run on each
+node to sample local stats), so there is no `make run` step — you deploy its
+stack and read the manager's logs. It also needs a shared `INGEST_TOKEN` at
+deploy time.
 
 ---
 
@@ -118,6 +126,39 @@ policy because healing only acts on managed services. A 2+-node swarm reproduces
 the stall most cleanly (see the notes in the stack file). Tear down:
 `docker stack rm healer` and `docker node update --label-rm nodeNum <node-id>`.
 
+## 4. Cluster-wide autoscaling + rebalancing ([`agents/`](agents/))
+
+The v0.3.0 fleet in one stack: a `manager`, a per-node `agent` (global), and a
+CPU-bound `web` workload opted into **both** cluster-wide autoscaling
+(`source=agents`) and load-aware rebalancing (`swarm.autoscaler.rebalance=true`).
+Agents push each node's local per-task CPU/memory to the manager, which
+aggregates it across **all** nodes — the multi-node coverage the plain Docker
+stats provider lacks (it only sees the manager's own node).
+
+```bash
+INGEST_TOKEN=$(openssl rand -hex 16) \
+  docker stack deploy -c examples/agents/stack.yml agents
+examples/cpu-autoscale/loadgen.sh http://localhost:8080/   # drive CPU at the target
+docker service logs -f agents_manager                      # watch decisions (dry-run is ON)
+```
+
+Expected manager logs (`LOG_LEVEL=debug`, so the source-routing DEBUG line shows):
+
+```
+msg="agent connected" node=<id> name=<host>
+msg="metrics: routing service" service=agents_web source=agents
+msg="scaling decision" service=agents_web metric=cpu value=~50 target=20 current=2 desired=5
+msg="dry-run: would scale" service=agents_web from=2 to=5 direction=up
+msg="rebalance recommendation" service=agents_web from_node=<hot> to_node=<cold> ...   # multi-node skew only
+```
+
+Enable real actions with `docker service update --env-add DRY_RUN=false agents_manager`.
+**Multi-node only:** on a single-node swarm `source=agents` equals `dockerstats`
+(one agent = one node) and rebalancing has nothing to move. Rebalancing needs 2+
+active nodes with a real CPU skew; it force-updates the **whole** service
+(re-cycles all replicas — Swarm has no targeted task-move), so it is opt-in,
+dry-run by default, and behind a long cooldown. Tear down: `docker stack rm agents`.
+
 ---
 
 ## Safety & teardown
@@ -125,10 +166,11 @@ the stall most cleanly (see the notes in the stack file). Tear down:
 - Everything is **dry-run until `--dry-run=false`** — the daemon logs `would …`
   and touches nothing.
 - Only services carrying `swarm.autoscaler.enabled=true` are ever considered.
-- Remove a demo with `docker stack rm <stack>` (`demo`, `promdemo`, `healer`).
+- Remove a demo with `docker stack rm <stack>` (`demo`, `promdemo`, `healer`, `agents`).
 
 ## See also
 
 - [Configuration](../docs/configuration.md) — every flag, env var, and service label.
 - [Metrics Providers](../docs/metrics-providers.md) — Docker stats vs Prometheus, `$SERVICE`/`$SERVICE_ID`, PromQL result rules.
+- [Agents & Rebalancing](../docs/agents-and-rebalancing.md) — the manager/agent fleet, `source=agents`, and load-aware rebalancing (§4).
 - [Getting Started](../docs/getting-started.md) — build and first run.

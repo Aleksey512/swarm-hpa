@@ -1,0 +1,173 @@
+# Example: cluster-wide autoscaling + load-aware rebalancing via the agent fleet
+# =============================================================================
+# The v0.3.0 story in one stack: a swarm-hpa MANAGER, a per-node AGENT fleet
+# (mode: global), and a CPU-bound target workload that opts into BOTH
+# cluster-wide autoscaling (source=agents) and load-aware rebalancing
+# (swarm.autoscaler.rebalance).
+#
+# Why agents? The plain dockerstats provider only reads task stats from the
+# manager's OWN node — on a multi-node swarm it never sees remote-node tasks. The
+# agents run on every node, push their local per-task CPU/memory to the manager,
+# and the manager aggregates them cluster-wide. Rebalancing uses the same signal
+# to relieve a node whose CPU is far above the others.
+#
+# Deploy (a shared token wires the agents to the manager; MUST be set):
+#   INGEST_TOKEN=$(openssl rand -hex 16) \
+#     docker stack deploy -c examples/agents/stack.yml agents
+#
+# Generate load at the target (reuse the CPU demo's loadgen):
+#   examples/cpu-autoscale/loadgen.sh http://localhost:8080/
+#
+# Watch the MANAGER decide (dry-run is ON by default — nothing is mutated yet):
+#   docker service logs -f agents_manager
+# Expect lines like (LOG_LEVEL=debug, so the source-routing DEBUG line shows too):
+#   level=INFO  msg="agent connected" node=<id> name=<host>
+#   level=INFO  msg="observed managed services" count=1
+#   level=DEBUG msg="metrics: routing service" service=agents_web source=agents
+#   level=INFO  msg="scaling decision" service=agents_web metric=cpu value=~50 target=20 current=2 desired=5
+#   level=INFO  msg="dry-run: would scale" service=agents_web from=2 to=5 direction=up
+#   # and, when node CPU is skewed across a MULTI-node swarm:
+#   level=INFO  msg="rebalance recommendation" service=agents_web from_node=<hot> to_node=<cold> ...
+#   level=INFO  msg="dry-run: would rebalance (force-update)" service=agents_web from_node=<hot> to_node=<cold>
+#
+# Enable real actions once the dry-run logs look right (set on the MANAGER):
+#   docker service update --env-add DRY_RUN=false agents_manager
+#
+# Tear down:
+#   docker stack rm agents
+#
+# Multi-node caveats (read before you conclude it "doesn't do anything"):
+#   * source=agents only differs from dockerstats on a MULTI-node swarm — on a
+#     single node there is exactly one agent (one node), so the aggregate equals
+#     the local reading.
+#   * Rebalancing needs 2+ active nodes AND a genuine CPU skew between them; with
+#     one node there is nothing to move. It force-updates the WHOLE service
+#     (re-cycles ALL replicas — Swarm has no targeted task-move), so it is opt-in,
+#     dry-run by default, and behind a long cooldown.
+# =============================================================================
+version: "3.8"
+
+services:
+  # ── swarm-hpa manager: reconcile loop + report ingest + rebalancer ──────────
+  manager:
+    image: ${IMAGE:-ghcr.io/aleksey512/swarm-hpa}:${TAG:-latest}
+    # Root to open the manager socket, tightly confined.
+    user: "0:0"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      MODE: "manager"
+      DRY_RUN: "true"              # safety default — log intended actions, apply none
+      LOG_LEVEL: "debug"          # the demo is about reading decisions
+      LOG_FORMAT: "text"
+      POLL_INTERVAL: "15s"
+      METRICS_ADDR: ":9095"
+      INGEST_ADDR: ":9096"        # agents POST reports here (overlay-only)
+      INGEST_TOKEN: "${INGEST_TOKEN:?set INGEST_TOKEN (e.g. openssl rand -hex 16)}"
+      METRICS_PROVIDER: "agents"  # aggregate the fleet cluster-wide
+      REBALANCE_THRESHOLD: "0.30" # move when node CPU spread >= 30 points
+      REBALANCE_COOLDOWN: "10m"
+    ports:
+      - target: 9095
+        published: 9095
+        protocol: tcp
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        read_only: true
+    networks:
+      - hpa
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: any
+        delay: 5s
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+
+  # ── swarm-hpa agent: one per node (global), pushes local load to the manager ─
+  agent:
+    image: ${IMAGE:-ghcr.io/aleksey512/swarm-hpa}:${TAG:-latest}
+    # Root to read the LOCAL socket (ContainerStats/Info); never mutates Swarm.
+    user: "0:0"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      MODE: "agent"
+      LOG_LEVEL: "debug"
+      LOG_FORMAT: "text"
+      REPORT_INTERVAL: "15s"
+      METRICS_ADDR: ":9095"       # agent /metrics + /healthz (unpublished)
+      MANAGER_URL: "http://manager:9096"  # resolve the manager by service name on the overlay
+      INGEST_TOKEN: "${INGEST_TOKEN:?set INGEST_TOKEN (e.g. openssl rand -hex 16)}"
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        read_only: true
+    networks:
+      - hpa
+    deploy:
+      mode: global                # exactly one agent per node
+      restart_policy:
+        condition: any
+        delay: 5s
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
+
+  # ── target workload: the canonical HPA demo app (CPU-bound per request) ──────
+  web:
+    image: registry.k8s.io/hpa-example
+    ports:
+      - target: 80
+        published: 8080
+        protocol: tcp
+        mode: ingress
+    deploy:
+      mode: replicated
+      replicas: 2
+
+      # ---------------------------------------------------------------------
+      # OPT-IN POLICY — swarm.autoscaler.* labels live under `deploy.labels`
+      # (SERVICE labels), NOT a top-level `labels:` key (those are CONTAINER
+      # labels the daemon never sees). source=agents and rebalance are SERVICE
+      # labels too.
+      # ---------------------------------------------------------------------
+      labels:
+        swarm.autoscaler.enabled: "true"    # hard opt-in
+        swarm.autoscaler.min: "2"
+        swarm.autoscaler.max: "8"
+        swarm.autoscaler.metric: "cpu"
+        swarm.autoscaler.target: "20"       # below the ~50% per-task ceiling (cpus: 0.50) so it visibly scales out
+        swarm.autoscaler.source: "agents"   # aggregate this service's tasks across ALL nodes via the fleet
+        swarm.autoscaler.rebalance: "true"  # also eligible for load-aware rebalancing (opt-in)
+
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+        reservations:
+          cpus: "0.05"
+          memory: 32M
+      restart_policy:
+        condition: any
+        delay: 5s
+
+networks:
+  hpa:
+    driver: overlay
