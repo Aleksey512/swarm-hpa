@@ -21,7 +21,7 @@ func cloneWith(mut func(map[string]string)) map[string]string {
 }
 
 func TestParsePolicyValid(t *testing.T) {
-	p, autoscale, heal, err := ParsePolicy(validLabels())
+	p, autoscale, heal, rebalance, err := ParsePolicy(validLabels())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -30,6 +30,9 @@ func TestParsePolicyValid(t *testing.T) {
 	}
 	if !heal {
 		t.Fatal("expected heal=true (defaults to enabled)")
+	}
+	if rebalance {
+		t.Fatal("expected rebalance=false (defaults off, even when enabled)")
 	}
 	if !p.Enabled || p.Min != 2 || p.Max != 10 || p.Target != 70 || p.Metric != "cpu" {
 		t.Errorf("unexpected policy: %+v", p)
@@ -66,7 +69,7 @@ func TestParsePolicySourceAndQuery(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			p, autoscale, _, err := ParsePolicy(cloneWith(tc.mut))
+			p, autoscale, _, _, err := ParsePolicy(cloneWith(tc.mut))
 			if err != nil || !autoscale {
 				t.Fatalf("autoscale=%v err=%v", autoscale, err)
 			}
@@ -82,16 +85,18 @@ func TestParsePolicySourceAndQuery(t *testing.T) {
 
 func TestParsePolicyNotOptedIn(t *testing.T) {
 	cases := map[string]map[string]string{
-		"no enabled label":           {"other": "x"},
-		"enabled not true":           cloneWith(func(m map[string]string) { m[LabelEnabled] = "1" }),
-		"enabled false":              cloneWith(func(m map[string]string) { m[LabelEnabled] = "false" }),
-		"enabled false + heal false": {LabelEnabled: "false", LabelHeal: "false"},
+		"no enabled label":             {"other": "x"},
+		"enabled not true":             cloneWith(func(m map[string]string) { m[LabelEnabled] = "1" }),
+		"enabled false":                cloneWith(func(m map[string]string) { m[LabelEnabled] = "false" }),
+		"enabled false + heal false":   {LabelEnabled: "false", LabelHeal: "false"},
+		"all opt-ins explicitly false": {LabelEnabled: "false", LabelHeal: "false", LabelRebalance: "false"},
 	}
 	for name, labels := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, autoscale, heal, err := ParsePolicy(labels)
-			if autoscale || heal || err != nil {
-				t.Errorf("want autoscale=false heal=false err=nil, got autoscale=%v heal=%v err=%v", autoscale, heal, err)
+			_, autoscale, heal, rebalance, err := ParsePolicy(labels)
+			if autoscale || heal || rebalance || err != nil {
+				t.Errorf("want all opt-ins false, err=nil; got autoscale=%v heal=%v rebalance=%v err=%v",
+					autoscale, heal, rebalance, err)
 			}
 		})
 	}
@@ -113,7 +118,7 @@ func TestParsePolicyInvalid(t *testing.T) {
 	}
 	for name, mut := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, _, _, err := ParsePolicy(cloneWith(mut))
+			_, _, _, _, err := ParsePolicy(cloneWith(mut))
 			if err == nil {
 				t.Errorf("want an error (opted in but misconfigured), got nil")
 			}
@@ -125,7 +130,7 @@ func TestParsePolicyInvalid(t *testing.T) {
 // introduced by the swarm.autoscaler.heal label.
 func TestParsePolicyHeal(t *testing.T) {
 	t.Run("heal-only needs no policy", func(t *testing.T) {
-		p, autoscale, heal, err := ParsePolicy(map[string]string{LabelHeal: "true"})
+		p, autoscale, heal, _, err := ParsePolicy(map[string]string{LabelHeal: "true"})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -141,7 +146,7 @@ func TestParsePolicyHeal(t *testing.T) {
 	})
 
 	t.Run("enabled defaults heal to true", func(t *testing.T) {
-		_, autoscale, heal, err := ParsePolicy(validLabels())
+		_, autoscale, heal, _, err := ParsePolicy(validLabels())
 		if err != nil || !autoscale || !heal {
 			t.Fatalf("autoscale=%v heal=%v err=%v", autoscale, heal, err)
 		}
@@ -149,7 +154,7 @@ func TestParsePolicyHeal(t *testing.T) {
 
 	t.Run("heal=false opts an autoscaled service out of healing", func(t *testing.T) {
 		labels := cloneWith(func(m map[string]string) { m[LabelHeal] = "false" })
-		_, autoscale, heal, err := ParsePolicy(labels)
+		_, autoscale, heal, _, err := ParsePolicy(labels)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -163,14 +168,14 @@ func TestParsePolicyHeal(t *testing.T) {
 
 	t.Run("enabled + heal=true keeps both", func(t *testing.T) {
 		labels := cloneWith(func(m map[string]string) { m[LabelHeal] = "true" })
-		_, autoscale, heal, err := ParsePolicy(labels)
+		_, autoscale, heal, _, err := ParsePolicy(labels)
 		if err != nil || !autoscale || !heal {
 			t.Fatalf("autoscale=%v heal=%v err=%v", autoscale, heal, err)
 		}
 	})
 
 	t.Run("unparseable heal value is an error", func(t *testing.T) {
-		_, _, _, err := ParsePolicy(map[string]string{LabelHeal: "maybe"})
+		_, _, _, _, err := ParsePolicy(map[string]string{LabelHeal: "maybe"})
 		if err == nil {
 			t.Error("want an error for an invalid heal boolean")
 		}
@@ -181,8 +186,64 @@ func TestParsePolicyHeal(t *testing.T) {
 			m[LabelHeal] = "true"
 			delete(m, LabelMin)
 		})
-		if _, _, _, err := ParsePolicy(labels); err == nil {
+		if _, _, _, _, err := ParsePolicy(labels); err == nil {
 			t.Error("want an error when enabled=true but the policy is invalid")
+		}
+	})
+}
+
+// TestParsePolicyRebalance covers the independent swarm.autoscaler.rebalance
+// opt-in: off by default, enable-able alone (rebalance-only) or alongside
+// autoscale/heal, and defaulting off even for autoscaled services.
+func TestParsePolicyRebalance(t *testing.T) {
+	t.Run("rebalance-only needs no policy", func(t *testing.T) {
+		p, autoscale, heal, rebalance, err := ParsePolicy(map[string]string{LabelRebalance: "true"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if autoscale || heal {
+			t.Errorf("rebalance-only must not autoscale or heal, got autoscale=%v heal=%v", autoscale, heal)
+		}
+		if !rebalance {
+			t.Error("rebalance should be true")
+		}
+		if p.Enabled {
+			t.Errorf("policy must be the zero value for rebalance-only, got %+v", p)
+		}
+	})
+
+	t.Run("defaults off for an autoscaled service", func(t *testing.T) {
+		_, _, _, rebalance, err := ParsePolicy(validLabels())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if rebalance {
+			t.Error("rebalance must default to false even when enabled=true")
+		}
+	})
+
+	t.Run("enabled + rebalance=true keeps all three", func(t *testing.T) {
+		labels := cloneWith(func(m map[string]string) { m[LabelRebalance] = "true" })
+		_, autoscale, heal, rebalance, err := ParsePolicy(labels)
+		if err != nil || !autoscale || !heal || !rebalance {
+			t.Fatalf("autoscale=%v heal=%v rebalance=%v err=%v", autoscale, heal, rebalance, err)
+		}
+	})
+
+	t.Run("heal-only + rebalance=true", func(t *testing.T) {
+		_, autoscale, heal, rebalance, err := ParsePolicy(map[string]string{
+			LabelHeal:      "true",
+			LabelRebalance: "true",
+		})
+		if err != nil || autoscale || !heal || !rebalance {
+			t.Fatalf("autoscale=%v heal=%v rebalance=%v err=%v", autoscale, heal, rebalance, err)
+		}
+	})
+
+	t.Run("unparseable rebalance value is an error", func(t *testing.T) {
+		_, _, _, _, err := ParsePolicy(map[string]string{LabelRebalance: "sometimes"})
+		if err == nil {
+			t.Error("want an error for an invalid rebalance boolean")
 		}
 	})
 }

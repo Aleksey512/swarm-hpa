@@ -9,6 +9,8 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/docker/docker/client"
+
 	"github.com/Aleksey512/swarm-hpa/internal/adapter/metrics"
 	"github.com/Aleksey512/swarm-hpa/internal/adapter/observability"
 	swarmadapter "github.com/Aleksey512/swarm-hpa/internal/adapter/swarm"
@@ -52,6 +54,7 @@ func run() int {
 
 	logger.Info("starting swarm-hpa",
 		"version", version,
+		"mode", cfg.Mode,
 		"dry_run", cfg.DryRun,
 		"metrics_provider", cfg.MetricsProvider,
 	)
@@ -59,7 +62,8 @@ func run() int {
 		logger.Info("dry-run is enabled: no Swarm mutations will be applied")
 	}
 
-	// Build the Docker client and the read-only swarm adapter (composition root).
+	// Build the Docker client shared by both roles: the manager talks to the
+	// Swarm API (manager-only), the agent reads local task/node stats.
 	cli, err := swarmadapter.NewClient()
 	if err != nil {
 		logger.Error("failed to create docker client", "err", err)
@@ -67,6 +71,23 @@ func run() int {
 	}
 	defer func() { _ = cli.Close() }()
 
+	// Root context cancelled on SIGINT/SIGTERM for graceful shutdown.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	switch cfg.Mode {
+	case config.ModeAgent:
+		return runAgent(ctx, cfg, cli, logger)
+	default:
+		return runManager(ctx, cfg, cli, logger)
+	}
+}
+
+// runManager wires and runs the manager role: the reconcile loop plus its
+// /metrics server (and, once wired, the agent-report ingest endpoint and
+// rebalancer). buildApp does no I/O, so the only failure here is a programming
+// error (a nil required dep).
+func runManager(ctx context.Context, cfg config.Config, cli *client.Client, logger *slog.Logger) int {
 	swarmCtl := swarmadapter.New(cli, logger)
 	metricsProvider, err := metrics.New(cfg, cli, logger)
 	if err != nil {
@@ -75,8 +96,6 @@ func run() int {
 	}
 	recorder := observability.NewRecorder(version, logger)
 
-	// Wire the composition root into a runnable daemon. buildApp does no I/O,
-	// so the only failure here is a programming error (a nil required dep).
 	application, err := buildApp(cfg, appDeps{
 		swarm:          swarmCtl,
 		metrics:        metricsProvider,
@@ -89,10 +108,6 @@ func run() int {
 		logger.Error("failed to build application", "err", err)
 		return 1
 	}
-
-	// Root context cancelled on SIGINT/SIGTERM for graceful shutdown.
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	return application.run(ctx)
 }

@@ -165,9 +165,33 @@ func TestToManagedServiceHealFalseOptOut(t *testing.T) {
 	}
 }
 
+func TestToManagedServiceRebalanceOnly(t *testing.T) {
+	// A service opted into rebalancing only — no autoscaler policy, no healing.
+	svc := dswarm.Service{
+		ID: "cache",
+		Spec: dswarm.ServiceSpec{
+			Annotations: dswarm.Annotations{Name: "cache", Labels: map[string]string{"swarm.autoscaler.rebalance": "true"}},
+			Mode:        dswarm.ServiceMode{Replicated: &dswarm.ReplicatedService{}},
+		},
+	}
+	ms, err := toManagedService(svc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ms.Autoscale || ms.Heal {
+		t.Errorf("rebalance-only must not autoscale or heal, got autoscale=%v heal=%v", ms.Autoscale, ms.Heal)
+	}
+	if !ms.Rebalance {
+		t.Error("Rebalance should be true")
+	}
+	if ms.Policy.Enabled {
+		t.Errorf("policy must be the zero value for rebalance-only, got %+v", ms.Policy)
+	}
+}
+
 func TestAdapterManagedServicesDedupe(t *testing.T) {
-	// The fake ignores the label filter and returns the same service for BOTH the
-	// enabled=true and heal=true queries; the adapter must dedupe by service ID.
+	// The fake ignores the label filter and returns the same service for ALL three
+	// opt-in queries (enabled/heal/rebalance); the adapter must dedupe by service ID.
 	reps := uint64(1)
 	svc := dswarm.Service{
 		ID: "both",

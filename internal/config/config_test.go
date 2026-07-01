@@ -242,6 +242,105 @@ func TestLoadArgsValidationErrors(t *testing.T) {
 	}
 }
 
+func TestLoadArgsModeDefaults(t *testing.T) {
+	c, err := LoadArgs(nil, fakeEnv(nil))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.Mode != ModeManager {
+		t.Errorf("Mode = %q, want %q (manager must be the default)", c.Mode, ModeManager)
+	}
+	if c.IngestAddr != ":9096" {
+		t.Errorf("IngestAddr = %q, want :9096", c.IngestAddr)
+	}
+	if c.AgentStaleTimeout != 45*time.Second {
+		t.Errorf("AgentStaleTimeout = %s, want 45s", c.AgentStaleTimeout)
+	}
+	if c.RebalanceThreshold != 0.30 {
+		t.Errorf("RebalanceThreshold = %g, want 0.30", c.RebalanceThreshold)
+	}
+	if c.RebalanceCooldown != 10*time.Minute {
+		t.Errorf("RebalanceCooldown = %s, want 10m", c.RebalanceCooldown)
+	}
+	if c.ReportInterval != 15*time.Second {
+		t.Errorf("ReportInterval = %s, want 15s", c.ReportInterval)
+	}
+}
+
+func TestLoadArgsAgentMode(t *testing.T) {
+	// Agent mode requires a manager URL; env + flag both work.
+	c, err := LoadArgs(nil, fakeEnv(map[string]string{
+		"MODE":        ModeAgent,
+		"MANAGER_URL": "http://swarm-hpa-manager:9096",
+	}))
+	if err != nil {
+		t.Fatalf("valid agent config rejected: %v", err)
+	}
+	if c.Mode != ModeAgent || c.ManagerURL != "http://swarm-hpa-manager:9096" {
+		t.Fatalf("agent config not resolved: %+v", c)
+	}
+
+	// flag over env for manager URL + report interval
+	c, err = LoadArgs(
+		[]string{"--mode=agent", "--manager-url=http://m:9096", "--report-interval=5s"},
+		fakeEnv(map[string]string{"MANAGER_URL": "http://other:9096"}),
+	)
+	if err != nil || c.ManagerURL != "http://m:9096" || c.ReportInterval != 5*time.Second {
+		t.Fatalf("flag over env failed: err=%v url=%q interval=%s", err, c.ManagerURL, c.ReportInterval)
+	}
+
+	// prometheus provider validation is a manager-only concern; agent mode must
+	// not require a Prometheus URL even if the (irrelevant) provider is set.
+	if _, err := LoadArgs(
+		[]string{"--mode=agent", "--manager-url=http://m:9096", "--metrics-provider=prometheus"},
+		fakeEnv(nil),
+	); err != nil {
+		t.Errorf("agent mode should ignore prometheus provider validation, got %v", err)
+	}
+}
+
+func TestLoadArgsIngestToken(t *testing.T) {
+	// INGEST_TOKEN is env-only (no flag) so the secret never lands in argv.
+	c, err := LoadArgs(nil, fakeEnv(map[string]string{"INGEST_TOKEN": "s3cr3t"}))
+	if err != nil || c.IngestToken != "s3cr3t" {
+		t.Fatalf("ingest token not read from env: err=%v token=%q", err, c.IngestToken)
+	}
+	// there must be no --ingest-token flag (a secret flag would leak in ps)
+	if _, err := LoadArgs([]string{"--ingest-token=x"}, fakeEnv(nil)); err == nil {
+		t.Error("--ingest-token must not exist as a flag")
+	}
+	// the token must never appear in the structured log value
+	logged := c.LogValue().String()
+	if strings.Contains(logged, "s3cr3t") {
+		t.Errorf("ingest token leaked into LogValue: %q", logged)
+	}
+}
+
+func TestLoadArgsModeValidationErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		env  map[string]string
+	}{
+		{"invalid mode", []string{"--mode=worker"}, nil},
+		{"agent without manager url", nil, map[string]string{"MODE": "agent"}},
+		{"empty ingest addr", []string{"--ingest-addr="}, nil},
+		{"zero agent stale timeout", []string{"--agent-stale-timeout=0"}, nil},
+		{"rebalance threshold zero", []string{"--rebalance-threshold=0"}, nil},
+		{"rebalance threshold above one", []string{"--rebalance-threshold=1.5"}, nil},
+		{"negative rebalance cooldown", []string{"--rebalance-cooldown=-1s"}, nil},
+		{"agent zero report interval", []string{"--mode=agent", "--manager-url=http://m:9096", "--report-interval=0"}, nil},
+		{"bad env float", nil, map[string]string{"REBALANCE_THRESHOLD": "half"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := LoadArgs(tc.args, fakeEnv(tc.env)); err == nil {
+				t.Error("expected an error, got nil")
+			}
+		})
+	}
+}
+
 func TestRedactURL(t *testing.T) {
 	got := redactURL("http://user:secret@prom:9090/api")
 	if strings.Contains(got, "secret") {

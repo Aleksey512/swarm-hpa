@@ -47,12 +47,14 @@ func New(cli *client.Client, logger *slog.Logger) *Adapter {
 }
 
 // ManagedServices lists services opted into autoscaling (swarm.autoscaler.enabled
-// =true) OR healing (swarm.autoscaler.heal=true), parses each, and maps them to
+// =true), healing (swarm.autoscaler.heal=true), OR rebalancing
+// (swarm.autoscaler.rebalance=true), parses each, and maps them to
 // model.ManagedService. A service that opted in but is misconfigured is logged at
 // WARN and skipped (never fatal).
 //
-// A single Docker label filter cannot OR values, so the two opt-in labels are
-// queried separately and merged, deduped by service ID (a service may carry both).
+// A single Docker label filter cannot OR values, so the three opt-in labels are
+// queried separately and merged, deduped by service ID (a service may carry more
+// than one).
 func (a *Adapter) ManagedServices(ctx context.Context) ([]model.ManagedService, error) {
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
@@ -65,10 +67,15 @@ func (a *Adapter) ManagedServices(ctx context.Context) ([]model.ManagedService, 
 	if err != nil {
 		return nil, err
 	}
+	rebalanceSvcs, err := a.listByLabel(ctx, config.LabelRebalance+"=true")
+	if err != nil {
+		return nil, err
+	}
 
-	seen := make(map[string]struct{}, len(enabledSvcs)+len(healSvcs))
-	managed := make([]model.ManagedService, 0, len(enabledSvcs)+len(healSvcs))
-	for _, group := range [][]dswarm.Service{enabledSvcs, healSvcs} {
+	total := len(enabledSvcs) + len(healSvcs) + len(rebalanceSvcs)
+	seen := make(map[string]struct{}, total)
+	managed := make([]model.ManagedService, 0, total)
+	for _, group := range [][]dswarm.Service{enabledSvcs, healSvcs, rebalanceSvcs} {
 		for _, svc := range group {
 			if _, dup := seen[svc.ID]; dup {
 				continue
@@ -82,7 +89,7 @@ func (a *Adapter) ManagedServices(ctx context.Context) ([]model.ManagedService, 
 			}
 			a.logger.Debug("observed managed service",
 				"service", ms.Ref.Name, "replicas", ms.Replicas,
-				"autoscale", ms.Autoscale, "heal", ms.Heal,
+				"autoscale", ms.Autoscale, "heal", ms.Heal, "rebalance", ms.Rebalance,
 				"min", ms.Policy.Min, "max", ms.Policy.Max, "metric", ms.Policy.Metric)
 			managed = append(managed, ms)
 		}
@@ -142,12 +149,13 @@ func (a *Adapter) Nodes(ctx context.Context) ([]model.NodeView, error) {
 // toManagedService maps an SDK service to a model.ManagedService, parsing its
 // policy from labels. It is pure (no client, no logging) so it is unit-testable.
 func toManagedService(svc dswarm.Service) (model.ManagedService, error) {
-	policy, autoscale, heal, err := config.ParsePolicy(svc.Spec.Labels)
+	policy, autoscale, heal, rebalance, err := config.ParsePolicy(svc.Spec.Labels)
 	if err != nil {
 		return model.ManagedService{}, err
 	}
-	if !autoscale && !heal {
-		return model.ManagedService{}, fmt.Errorf("not opted in (%s/%s)", config.LabelEnabled, config.LabelHeal)
+	if !autoscale && !heal && !rebalance {
+		return model.ManagedService{}, fmt.Errorf("not opted in (%s/%s/%s)",
+			config.LabelEnabled, config.LabelHeal, config.LabelRebalance)
 	}
 
 	var replicas uint64
@@ -172,6 +180,7 @@ func toManagedService(svc dswarm.Service) (model.ManagedService, error) {
 		Constraints: constraints,
 		Autoscale:   autoscale,
 		Heal:        heal,
+		Rebalance:   rebalance,
 	}, nil
 }
 
