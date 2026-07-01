@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -23,6 +24,13 @@ func main() {
 }
 
 func run() int {
+	// --version / -v: print the build banner and exit before any config or
+	// Docker-client work, so it works without a socket (e.g. in a container).
+	if wantsVersion(os.Args[1:]) {
+		fmt.Println(versionString())
+		return 0
+	}
+
 	// Bootstrap a logger from the environment so configuration parsing and any
 	// resulting errors are visible before the full config is resolved.
 	observability.Setup(observability.Options{
