@@ -109,10 +109,10 @@ the docs task / completion.)
 <!-- Commit checkpoint: T3–T4 → Commit 2 -->
 
 ### Phase 2: Manager ingest + registry
-- [ ] T5: Agent registry — dedup by node ID + stale eviction (`internal/app/registry`) —
+- [x] T5: Agent registry — dedup by node ID + stale eviction (`internal/app/registry`) —
   concurrency-safe, last-writer-wins per node, `Snapshot()`, duplicate detection,
   injected clock. Tests (dedup/eviction/race/goleak). (depends on T2)
-- [ ] T6: Manager ingest HTTP adapter + wiring (`internal/core/port/report.go`,
+- [x] T6: Manager ingest HTTP adapter + wiring (`internal/core/port/report.go`,
   `internal/adapter/ingest`, `cmd/swarm-hpa`) — `POST /v1/report`, token auth,
   node-ID cross-check, dedicated ingest server. Tests. (depends on T5, T1)
 <!-- Commit checkpoint: T5–T6 → Commit 3 -->

@@ -3,17 +3,22 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/docker/docker/client"
 
+	"github.com/Aleksey512/swarm-hpa/internal/adapter/ingest"
 	"github.com/Aleksey512/swarm-hpa/internal/adapter/metrics"
 	"github.com/Aleksey512/swarm-hpa/internal/adapter/observability"
 	swarmadapter "github.com/Aleksey512/swarm-hpa/internal/adapter/swarm"
+	"github.com/Aleksey512/swarm-hpa/internal/app/registry"
 	"github.com/Aleksey512/swarm-hpa/internal/config"
 	"github.com/Aleksey512/swarm-hpa/internal/core/port"
 )
@@ -84,17 +89,19 @@ func run() int {
 }
 
 // runManager wires and runs the manager role: the reconcile loop plus its
-// /metrics server (and, once wired, the agent-report ingest endpoint and
-// rebalancer). buildApp does no I/O, so the only failure here is a programming
+// /metrics server, and the agent-report ingest endpoint that feeds the agent
+// registry. buildApp does no I/O, so the only failure here is a programming
 // error (a nil required dep).
 func runManager(ctx context.Context, cfg config.Config, cli *client.Client, logger *slog.Logger) int {
 	swarmCtl := swarmadapter.New(cli, logger)
+	recorder := observability.NewRecorder(version, logger)
+	reg := registry.New(cfg.AgentStaleTimeout, port.SystemClock{}, nil, logger)
+
 	metricsProvider, err := metrics.New(cfg, cli, logger)
 	if err != nil {
 		logger.Error("failed to build metrics provider", "err", err)
 		return 1
 	}
-	recorder := observability.NewRecorder(version, logger)
 
 	application, err := buildApp(cfg, appDeps{
 		swarm:          swarmCtl,
@@ -109,5 +116,33 @@ func runManager(ctx context.Context, cfg config.Config, cli *client.Client, logg
 		return 1
 	}
 
-	return application.run(ctx)
+	// Start the agent-report ingest server on its own address so it can be
+	// scoped to the internal overlay network rather than exposed for scraping.
+	ingestSrv := newIngestServer(cfg, reg, swarmCtl, logger)
+	go func() {
+		logger.Info("ingest endpoint listening", "addr", ingestSrv.Addr, "path", ingest.ReportPath)
+		if err := ingestSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("ingest server failed", "err", err)
+		}
+	}()
+
+	rc := application.run(ctx)
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := ingestSrv.Shutdown(shutdownCtx); err != nil {
+		logger.Error("ingest server shutdown failed", "err", err)
+	}
+	return rc
+}
+
+// newIngestServer builds the HTTP server that receives agent reports.
+func newIngestServer(cfg config.Config, reg *registry.Registry, swarmCtl *swarmadapter.Adapter, logger *slog.Logger) *http.Server {
+	mux := http.NewServeMux()
+	mux.Handle(ingest.ReportPath, ingest.New(reg, cfg.IngestToken, swarmCtl, logger))
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	return &http.Server{Addr: cfg.IngestAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 }
