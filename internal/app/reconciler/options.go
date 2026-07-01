@@ -1,6 +1,29 @@
 package reconciler
 
-import "time"
+import (
+	"time"
+
+	"github.com/Aleksey512/swarm-hpa/internal/core/model"
+)
+
+// LoadSource yields the latest per-node agent reports the rebalancer compares.
+// Implemented by app/registry.Registry. When unset (nil), rebalancing is
+// disabled (e.g. no agent fleet wired).
+type LoadSource interface {
+	Snapshot() []model.AgentReport
+}
+
+// WithRebalancing enables the load-aware rebalance branch. loads supplies the
+// per-node load snapshot and threshold is the node-load spread fraction (0,1]
+// at/above which a move is proposed. A nil loads leaves rebalancing disabled.
+func WithRebalancing(loads LoadSource, threshold float64) Option {
+	return func(r *Reconciler) {
+		if loads != nil {
+			r.loads = loads
+			r.rebalanceThreshold = threshold
+		}
+	}
+}
 
 // TickSource produces the channel Run selects on for its periodic observations,
 // together with a stop function that releases the source's resources. The

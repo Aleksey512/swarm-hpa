@@ -24,6 +24,7 @@ type Recorder struct {
 	managedServices prometheus.Gauge
 	scalesTotal     *prometheus.CounterVec
 	healsTotal      *prometheus.CounterVec
+	rebalancesTotal *prometheus.CounterVec
 	suppressedTotal *prometheus.CounterVec
 	errorsTotal     *prometheus.CounterVec
 	logger          *slog.Logger
@@ -59,6 +60,10 @@ func NewRecorder(version string, logger *slog.Logger) *Recorder {
 		healsTotal: f.NewCounterVec(prometheus.CounterOpts{
 			Namespace: metricNamespace, Name: "heals_total",
 			Help: "Heal (force-update) actions applied, by service.",
+		}, []string{"service"}),
+		rebalancesTotal: f.NewCounterVec(prometheus.CounterOpts{
+			Namespace: metricNamespace, Name: "rebalances_total",
+			Help: "Rebalance (force-update) actions applied, by service.",
 		}, []string{"service"}),
 		suppressedTotal: f.NewCounterVec(prometheus.CounterOpts{
 			Namespace: metricNamespace, Name: "actions_suppressed_total",
@@ -100,6 +105,11 @@ func (r *Recorder) ScaleApplied(service string) {
 // HealApplied increments the applied-heals counter for the service.
 func (r *Recorder) HealApplied(service string) {
 	r.healsTotal.WithLabelValues(service).Inc()
+}
+
+// RebalanceApplied increments the applied-rebalances counter for the service.
+func (r *Recorder) RebalanceApplied(service string) {
+	r.rebalancesTotal.WithLabelValues(service).Inc()
 }
 
 // ActionSuppressed increments the suppressed-actions counter, labeled by action and reason.

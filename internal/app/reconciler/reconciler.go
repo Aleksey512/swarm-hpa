@@ -10,6 +10,7 @@ import (
 	"github.com/Aleksey512/swarm-hpa/internal/core/healer"
 	"github.com/Aleksey512/swarm-hpa/internal/core/model"
 	"github.com/Aleksey512/swarm-hpa/internal/core/port"
+	"github.com/Aleksey512/swarm-hpa/internal/core/rebalancer"
 )
 
 // Reconciler runs the periodic control loop. It observes Swarm (read-only) and
@@ -27,6 +28,11 @@ type Reconciler struct {
 	logger        *slog.Logger
 	tickSource    TickSource
 	customTick    bool
+
+	// Rebalancing (optional; enabled via WithRebalancing). loads is nil when no
+	// agent fleet is wired, which disables the rebalance branch entirely.
+	loads              LoadSource
+	rebalanceThreshold float64
 }
 
 // New constructs a Reconciler. healThreshold is the minimum time a task must be
@@ -120,6 +126,11 @@ func (r *Reconciler) observe(ctx context.Context) {
 	}
 	now := r.clock.Now()
 
+	// tasksByNode collects rebalance-eligible services' tasks so the cluster-level
+	// rebalance decision (after the per-service loop) can find a task to move off a
+	// hot node. Only populated for opted-in services.
+	tasksByNode := make(map[string][]model.TaskView)
+
 	flaggedForHeal := 0
 	for _, svc := range services {
 		tasks, err := r.swarm.Tasks(ctx, svc.Ref.ID)
@@ -127,6 +138,13 @@ func (r *Reconciler) observe(ctx context.Context) {
 			r.logger.Error("observe: listing tasks failed", "service", svc.Ref.Name, "err", err)
 			r.recorder.Error("tasks")
 			continue
+		}
+		if svc.Rebalance {
+			for _, t := range tasks {
+				if t.NodeID != "" {
+					tasksByNode[t.NodeID] = append(tasksByNode[t.NodeID], t)
+				}
+			}
 		}
 		pending, running := countStates(tasks)
 		r.logger.Debug("observed service",
@@ -197,6 +215,72 @@ func (r *Reconciler) observe(ctx context.Context) {
 	if flaggedForHeal > 0 {
 		r.logger.Debug("services routed through heal", "count", flaggedForHeal)
 	}
+
+	r.rebalance(ctx, services, tasksByNode, nodes)
+}
+
+// rebalance runs the cluster-level, load-aware rebalance decision once per tick
+// and routes any recommended move through the Guard (opt-in + dry-run + long
+// cooldown). It is a no-op when rebalancing is not wired (no agent fleet) or no
+// service opted in. The recommendation is always logged, even in dry-run.
+func (r *Reconciler) rebalance(ctx context.Context, services []model.ManagedService, tasksByNode map[string][]model.TaskView, nodes []model.NodeView) {
+	if r.loads == nil {
+		return // rebalancing not enabled (no agent registry wired)
+	}
+	if !anyRebalanceOptIn(services) {
+		return
+	}
+
+	states := buildNodeStates(nodes, r.loads.Snapshot())
+	plan := rebalancer.Recommend(states, services, tasksByNode, r.rebalanceThreshold)
+	if len(plan.Moves) == 0 {
+		r.logger.Debug("rebalance: no move recommended", "nodes_with_load", len(states))
+		return
+	}
+
+	byID := make(map[string]model.ManagedService, len(services))
+	for _, svc := range services {
+		byID[svc.Ref.ID] = svc
+	}
+	for _, m := range plan.Moves {
+		svc, ok := byID[m.ServiceID]
+		if !ok {
+			continue
+		}
+		r.logger.Info("rebalance recommendation",
+			"service", m.ServiceName, "from_node", m.FromNodeID, "to_node", m.ToNodeID,
+			"from_load", m.FromLoad, "to_load", m.ToLoad, "reason", m.Reason)
+		if err := r.guard.Rebalance(ctx, svc, m.FromNodeID, m.ToNodeID); err != nil {
+			r.logger.Error("rebalance failed", "service", m.ServiceName, "err", err)
+		}
+	}
+}
+
+// buildNodeStates joins each node's placement view with its latest reported load
+// (CPU%, the primary load signal). Only nodes with a live agent report are
+// included — a node without agent data has unknown load and is never assumed idle.
+func buildNodeStates(nodes []model.NodeView, reports []model.AgentReport) []rebalancer.NodeState {
+	load := make(map[string]float64, len(reports))
+	for _, rep := range reports {
+		load[rep.NodeID] = rep.Node.CPUPercent
+	}
+	states := make([]rebalancer.NodeState, 0, len(nodes))
+	for _, n := range nodes {
+		if l, ok := load[n.ID]; ok {
+			states = append(states, rebalancer.NodeState{View: n, Load: l})
+		}
+	}
+	return states
+}
+
+// anyRebalanceOptIn reports whether any managed service opted into rebalancing.
+func anyRebalanceOptIn(services []model.ManagedService) bool {
+	for _, svc := range services {
+		if svc.Rebalance {
+			return true
+		}
+	}
+	return false
 }
 
 func countStates(tasks []model.TaskView) (pending, running int) {

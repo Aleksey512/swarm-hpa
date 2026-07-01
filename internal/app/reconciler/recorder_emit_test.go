@@ -16,6 +16,7 @@ type fakeRecorder struct {
 	observed   []int
 	scales     []string
 	heals      []string
+	rebalances []string
 	suppressed []string // "action:reason"
 	errors     []string
 }
@@ -23,10 +24,11 @@ type fakeRecorder struct {
 // compile-time proof the fake satisfies the port.
 var _ port.Recorder = (*fakeRecorder)(nil)
 
-func (f *fakeRecorder) ReconcileTick()         { f.ticks++ }
-func (f *fakeRecorder) ObservedServices(n int) { f.observed = append(f.observed, n) }
-func (f *fakeRecorder) ScaleApplied(s string)  { f.scales = append(f.scales, s) }
-func (f *fakeRecorder) HealApplied(s string)   { f.heals = append(f.heals, s) }
+func (f *fakeRecorder) ReconcileTick()            { f.ticks++ }
+func (f *fakeRecorder) ObservedServices(n int)    { f.observed = append(f.observed, n) }
+func (f *fakeRecorder) ScaleApplied(s string)     { f.scales = append(f.scales, s) }
+func (f *fakeRecorder) HealApplied(s string)      { f.heals = append(f.heals, s) }
+func (f *fakeRecorder) RebalanceApplied(s string) { f.rebalances = append(f.rebalances, s) }
 func (f *fakeRecorder) ActionSuppressed(action, reason string) {
 	f.suppressed = append(f.suppressed, action+":"+reason)
 }

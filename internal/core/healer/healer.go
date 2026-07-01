@@ -2,26 +2,10 @@ package healer
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/Aleksey512/swarm-hpa/internal/core/model"
-)
-
-// Constraint operators understood by the detector. Anything else is treated as
-// unparseable and conservatively ignored (see Detect / nodeSatisfies).
-const (
-	opEq  = "=="
-	opNeq = "!="
-)
-
-// Constraint key prefixes/keys the detector can evaluate. Keys outside this set
-// (e.g. node.role, engine.labels.*, platform.*) are unknown and never used to
-// exclude a node — see nodeSatisfies.
-const (
-	keyHostname    = "node.hostname"
-	keyID          = "node.id"
-	labelKeyPrefix = "node.labels."
+	"github.com/Aleksey512/swarm-hpa/internal/core/placement"
 )
 
 // Verdict is the result of stuck-task detection for a single service. It is a
@@ -69,7 +53,7 @@ func Detect(svc model.ManagedService, tasks []model.TaskView, nodes []model.Node
 	}
 
 	for _, n := range nodes {
-		if n.IsActive() && nodeSatisfies(n, svc.Constraints) {
+		if n.IsActive() && placement.NodeSatisfies(n, svc.Constraints) {
 			return Verdict{
 				Stuck:  true,
 				Reason: fmt.Sprintf("task pending >= %s and constraint-satisfying node is Active+Ready", threshold),
@@ -91,69 +75,4 @@ func longestPending(tasks []model.TaskView, threshold time.Duration, now time.Ti
 		}
 	}
 	return model.TaskView{}, false
-}
-
-// nodeSatisfies reports whether the node meets every placement constraint that
-// the detector can evaluate. Constraints it cannot parse, or whose key it does
-// not recognise, are skipped rather than treated as failures — this avoids
-// silently widening exclusion for exotic constraint forms. A parseable,
-// recognised constraint the node violates makes the whole node unsatisfying.
-func nodeSatisfies(n model.NodeView, constraints []string) bool {
-	for _, c := range constraints {
-		key, op, value, ok := parseConstraint(c)
-		if !ok {
-			continue // unparseable: never exclude
-		}
-		actual, known := nodeValue(n, key)
-		if !known {
-			continue // key we cannot evaluate: never exclude
-		}
-		equal := actual == value
-		switch op {
-		case opEq:
-			if !equal {
-				return false
-			}
-		case opNeq:
-			if equal {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-// nodeValue resolves the node attribute addressed by a constraint key, and
-// whether the detector knows how to evaluate that key. A missing node.labels.*
-// key yields ("", true): the node is known not to carry the label, so an `==`
-// constraint fails and a `!=` constraint holds — matching Swarm's semantics.
-func nodeValue(n model.NodeView, key string) (value string, known bool) {
-	switch {
-	case key == keyHostname:
-		return n.Name, true
-	case key == keyID:
-		return n.ID, true
-	case strings.HasPrefix(key, labelKeyPrefix):
-		return n.Labels[strings.TrimPrefix(key, labelKeyPrefix)], true
-	default:
-		return "", false
-	}
-}
-
-// parseConstraint splits a Docker placement constraint of the simple equality
-// form "<key> <op> <value>" (e.g. "node.labels.nodeNum == 1") into its parts.
-// Surrounding whitespace is trimmed. ok is false when no ==/!= operator is found
-// or either side is empty, in which case the caller ignores the constraint.
-func parseConstraint(raw string) (key, op, value string, ok bool) {
-	for _, o := range []string{opEq, opNeq} {
-		if i := strings.Index(raw, o); i >= 0 {
-			key = strings.TrimSpace(raw[:i])
-			value = strings.TrimSpace(raw[i+len(o):])
-			if key == "" || value == "" {
-				return "", "", "", false
-			}
-			return key, o, value, true
-		}
-	}
-	return "", "", "", false
 }

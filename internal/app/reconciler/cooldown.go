@@ -53,9 +53,12 @@ func (c *Cooldown) Record(serviceID string) {
 }
 
 // Cooldowns holds the per-action cooldown windows the Guard enforces: scale-ups
-// and scale-downs each get their own window, while heal uses Heal.
+// and scale-downs each get their own window, while heal and rebalance each use
+// their own. All actions on a service share one "last action" timestamp, so a
+// recent mutation of any kind delays the next one — avoiding stacked disruption.
 type Cooldowns struct {
 	ScaleUp   time.Duration
 	ScaleDown time.Duration
 	Heal      time.Duration
+	Rebalance time.Duration
 }

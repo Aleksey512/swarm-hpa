@@ -7,48 +7,6 @@ import (
 	"github.com/Aleksey512/swarm-hpa/internal/core/model"
 )
 
-func TestNodeSatisfies(t *testing.T) {
-	node := model.NodeView{
-		ID:           "n1",
-		Name:         "host-1",
-		Availability: model.NodeAvailabilityActive,
-		State:        model.NodeStateReady,
-		Labels:       map[string]string{"nodeNum": "1", "tier": "gpu"},
-	}
-
-	cases := []struct {
-		name        string
-		constraints []string
-		want        bool
-	}{
-		{"label eq match", []string{"node.labels.nodeNum==1"}, true},
-		{"label eq match spaced", []string{"node.labels.nodeNum == 1"}, true},
-		{"label eq mismatch", []string{"node.labels.nodeNum==2"}, false},
-		{"label eq missing label excludes", []string{"node.labels.zone==eu"}, false},
-		{"label neq holds", []string{"node.labels.nodeNum!=2"}, true},
-		{"label neq violated", []string{"node.labels.nodeNum!=1"}, false},
-		{"label neq missing label holds", []string{"node.labels.zone!=eu"}, true},
-		{"hostname eq", []string{"node.hostname==host-1"}, true},
-		{"hostname mismatch", []string{"node.hostname==host-2"}, false},
-		{"id eq", []string{"node.id==n1"}, true},
-		{"unparseable skipped", []string{"node.labels.nodeNum"}, true},
-		{"unknown key skipped", []string{"node.role==manager"}, true},
-		{"engine labels skipped", []string{"engine.labels.foo==bar"}, true},
-		{"multiple all satisfied", []string{"node.labels.nodeNum==1", "node.hostname==host-1"}, true},
-		{"multiple one fails", []string{"node.labels.nodeNum==1", "node.hostname==host-2"}, false},
-		{"unknown key never widens exclusion", []string{"node.role==worker", "node.labels.nodeNum==1"}, true},
-		{"unknown key plus failing parseable still fails", []string{"node.role==worker", "node.labels.nodeNum==2"}, false},
-		{"no constraints vacuously true", nil, true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := nodeSatisfies(node, tc.constraints); got != tc.want {
-				t.Errorf("nodeSatisfies(%v) = %v, want %v", tc.constraints, got, tc.want)
-			}
-		})
-	}
-}
-
 // healer test fixtures.
 var (
 	// t0 is the moment the pending task entered pending.

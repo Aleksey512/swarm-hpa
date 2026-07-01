@@ -21,7 +21,8 @@ type appDeps struct {
 	metrics        port.MetricsProvider
 	clock          port.Clock
 	recorder       port.Recorder
-	metricsHandler http.Handler // served at /metrics (recorder.Handler() on the real path)
+	metricsHandler http.Handler          // served at /metrics (recorder.Handler() on the real path)
+	loads          reconciler.LoadSource // agent registry; nil disables rebalancing
 	logger         *slog.Logger
 	reconcilerOpts []reconciler.Option // e.g. reconciler.WithTickSource for deterministic tests
 }
@@ -54,10 +55,20 @@ func buildApp(cfg config.Config, deps appDeps) (*app, error) {
 	}
 
 	cooldown := reconciler.NewCooldown(clock)
-	cooldowns := reconciler.Cooldowns{ScaleUp: cfg.ScaleUpCooldown, ScaleDown: cfg.ScaleDownCooldown, Heal: cfg.Cooldown}
+	cooldowns := reconciler.Cooldowns{
+		ScaleUp:   cfg.ScaleUpCooldown,
+		ScaleDown: cfg.ScaleDownCooldown,
+		Heal:      cfg.Cooldown,
+		Rebalance: cfg.RebalanceCooldown,
+	}
 	guard := reconciler.NewGuard(deps.swarm, cooldown, cooldowns, cfg.DryRun, deps.recorder, logger)
 	stabilizer := reconciler.NewStabilizer(cfg.ScaleDownStabilizationWindow)
-	rec := reconciler.New(deps.swarm, deps.metrics, guard, clock, cfg.HealThreshold, deps.recorder, stabilizer, cfg.MaxScaleStep, logger, deps.reconcilerOpts...)
+
+	opts := deps.reconcilerOpts
+	if deps.loads != nil {
+		opts = append(opts, reconciler.WithRebalancing(deps.loads, cfg.RebalanceThreshold))
+	}
+	rec := reconciler.New(deps.swarm, deps.metrics, guard, clock, cfg.HealThreshold, deps.recorder, stabilizer, cfg.MaxScaleStep, logger, opts...)
 
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", deps.metricsHandler)

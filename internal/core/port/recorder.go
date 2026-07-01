@@ -13,8 +13,10 @@ type Recorder interface {
 	ScaleApplied(service string)
 	// HealApplied records a real force-update (heal) applied to a service.
 	HealApplied(service string)
+	// RebalanceApplied records a real force-update (rebalance) applied to a service.
+	RebalanceApplied(service string)
 	// ActionSuppressed records an action that was intended but not applied.
-	// action is "scale" or "heal"; reason is "dry_run" or "cooldown".
+	// action is "scale", "heal", or "rebalance"; reason is "dry_run" or "cooldown".
 	ActionSuppressed(action, reason string)
 	// Error records a recoverable error by pipeline stage (for example
 	// "services", "tasks", "nodes", "metric", "scale", "heal").
@@ -40,6 +42,9 @@ func (NopRecorder) ScaleApplied(string) {}
 
 // HealApplied does nothing.
 func (NopRecorder) HealApplied(string) {}
+
+// RebalanceApplied does nothing.
+func (NopRecorder) RebalanceApplied(string) {}
 
 // ActionSuppressed does nothing.
 func (NopRecorder) ActionSuppressed(string, string) {}

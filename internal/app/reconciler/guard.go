@@ -105,3 +105,43 @@ func (g *Guard) Heal(ctx context.Context, svc model.ManagedService) error {
 	g.logger.Info("healed (forced reschedule)", "service", name)
 	return nil
 }
+
+// Rebalance force-updates a service to redistribute its tasks across nodes,
+// relieving a busy node. It is gated by the per-service rebalance opt-in
+// (svc.Rebalance), dry-run, and a dedicated (long) cooldown. The recommendation
+// is ALWAYS logged — even when suppressed — so operators can see what the
+// rebalancer wanted regardless of dry-run.
+//
+// Mechanism note: Swarm has no load-aware task-move API, so the only available
+// lever is force-update, which re-cycles ALL of the service's replicas so the
+// scheduler can place them afresh. That is disruptive, which is exactly why
+// rebalancing is opt-in, dry-run by default, and behind a long cooldown.
+// Targeted per-task relocation is a future enhancement.
+func (g *Guard) Rebalance(ctx context.Context, svc model.ManagedService, from, to string) error {
+	id, name := svc.Ref.ID, svc.Ref.Name
+	if !svc.Rebalance {
+		g.logger.Debug("skip rebalance: service not opted in", "service", name)
+		return nil
+	}
+	if !g.cooldown.Allowed(id, g.windows.Rebalance) {
+		g.logger.Info("rebalance suppressed by cooldown", "service", name, "from_node", from, "to_node", to)
+		g.recorder.ActionSuppressed("rebalance", "cooldown")
+		return nil
+	}
+
+	if g.dryRun {
+		g.logger.Info("dry-run: would rebalance (force-update)", "service", name, "from_node", from, "to_node", to)
+		g.cooldown.Record(id)
+		g.recorder.ActionSuppressed("rebalance", "dry_run")
+		return nil
+	}
+
+	if err := g.swarm.ForceUpdate(ctx, id); err != nil {
+		g.recorder.Error("rebalance")
+		return fmt.Errorf("rebalance %s: %w", name, err)
+	}
+	g.cooldown.Record(id)
+	g.recorder.RebalanceApplied(name)
+	g.logger.Info("rebalanced (forced reschedule)", "service", name, "from_node", from, "to_node", to)
+	return nil
+}

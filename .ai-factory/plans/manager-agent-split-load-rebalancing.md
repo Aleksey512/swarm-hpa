@@ -125,12 +125,14 @@ the docs task / completion.)
 <!-- Commit checkpoint: T7 → Commit 4 -->
 
 ### Phase 4: Rebalancer
-- [ ] T8: Pure core rebalancer (`internal/core/rebalancer`) — load-imbalance detection
-  → `RebalancePlan` respecting opt-in + placement constraints; pure, table-tested.
-  (depends on T2)
-- [ ] T9: Reconciler rebalance integration (`internal/app/reconciler`) — `guard.Rebalance`
-  (opt-in + dry-run + dedicated cooldown → `ForceUpdate`); rebalance branch in
-  `observe`; always logs the recommendation. Tests. (depends on T8, T6)
+- [x] T8: Pure core rebalancer (`internal/core/rebalancer`) — load-imbalance detection
+  → `Plan` of at most one move, respecting opt-in + replicated + placement constraints;
+  pure, table-tested. Constraint matching extracted to shared `internal/core/placement`
+  (healer refactored onto it). (depends on T2)
+- [x] T9: Reconciler rebalance integration (`internal/app/reconciler`) — `guard.Rebalance`
+  (opt-in + dry-run + dedicated cooldown → `ForceUpdate`); cluster-level rebalance branch
+  in `observe` fed by the registry snapshot via `WithRebalancing`; always logs the
+  recommendation. Tests. (depends on T8, T6)
 <!-- Commit checkpoint: T8–T9 → Commit 5 -->
 
 ### Phase 5: Observability, deploy, docs

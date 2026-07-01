@@ -109,6 +109,7 @@ func runManager(ctx context.Context, cfg config.Config, cli *client.Client, logg
 		clock:          port.SystemClock{},
 		recorder:       recorder,
 		metricsHandler: recorder.Handler(),
+		loads:          reg,
 		logger:         logger,
 	})
 	if err != nil {
