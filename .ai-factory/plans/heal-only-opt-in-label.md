@@ -80,7 +80,7 @@ Task 12 adds the entry as part of the v0.2.0 cut.)
 <!-- Commit checkpoint: tasks 11-12 → Commit 2 -->
 
 ### Phase 4: Release
-- [ ] Task 13: Cut `v0.2.0` — **outward-facing; confirm before pushing the tag.** Pre-flight
+- [x] Task 13: Cut `v0.2.0` — **outward-facing; confirm before pushing the tag.** Pre-flight
   (CI green, secrets present, no existing tag), `git tag -a v0.2.0` + push, watch release.yml,
   verify `:0.2.0`/`:0.2`/`:latest` on GHCR + Docker Hub. (depends on 11, 12)
 <!-- Commit checkpoint: task 13 → tag push (no source commit) -->
