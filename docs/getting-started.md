@@ -79,6 +79,7 @@ scale` / `dry-run: would force-update (heal)` instead of being applied.
 
 ## Next steps
 
+- [Examples](../examples/README.md) — runnable end-to-end demos (CPU + Prometheus autoscaling, healer) you can deploy right now.
 - [Configuration](configuration.md) — every flag, environment variable, and service label.
 - [Metrics Providers](metrics-providers.md) — choose Docker stats or Prometheus per service.
 

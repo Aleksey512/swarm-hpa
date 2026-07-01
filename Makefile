@@ -10,7 +10,7 @@ GOLANGCI := golangci-lint
 IMAGE    ?= ghcr.io/aleksey512/swarm-hpa
 
 .DEFAULT_GOAL := build
-.PHONY: build run test test-race test-integration cover lint fmt fmt-check vet tidy clean help docker-build docker-run docker-push
+.PHONY: build run test test-race test-integration cover lint fmt fmt-check vet tidy clean help docker-build docker-run docker-push examples-validate
 
 build: ## Build the daemon binary into bin/
 	@mkdir -p $(BIN_DIR)
@@ -28,6 +28,22 @@ docker-run: ## Run the image locally with the Docker socket mounted (dry-run sta
 docker-push: ## Push the image tags to the registry (override with IMAGE=...)
 	docker push $(IMAGE):$(VERSION)
 	docker push $(IMAGE):latest
+
+examples-validate: ## Parse-validate every examples/*/stack.yml (docker stack config; no deploy)
+	@echo "examples-validate: checking stack files ..."
+	@for f in examples/*/stack.yml; do \
+		echo "  docker stack config -c $$f"; \
+		docker stack config -c "$$f" >/dev/null || { echo "FAILED: $$f"; exit 1; }; \
+	done
+	@if command -v promtool >/dev/null 2>&1; then \
+		echo "  promtool check config examples/prometheus-autoscale/prometheus.yml"; \
+		promtool check config examples/prometheus-autoscale/prometheus.yml >/dev/null || exit 1; \
+	else echo "  (promtool not found — skipping prometheus.yml check)"; fi
+	@if command -v shellcheck >/dev/null 2>&1; then \
+		echo "  shellcheck examples/cpu-autoscale/loadgen.sh"; \
+		shellcheck examples/cpu-autoscale/loadgen.sh || exit 1; \
+	else echo "  (shellcheck not found — skipping loadgen.sh check)"; fi
+	@echo "examples-validate: PASS"
 
 test: ## Run unit tests
 	go test $(PKGS)

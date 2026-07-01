@@ -111,3 +111,4 @@ docker service update \
 
 - [Configuration](configuration.md) — the `source`/`query` labels and Prometheus flags.
 - [Getting Started](getting-started.md) — build and run the daemon.
+- [Examples](../examples/README.md) — a runnable Prometheus (PromQL) autoscaling demo.

@@ -49,8 +49,9 @@ source layout follows the Explicit Architecture (ports & adapters) in
 ├── go.mod                   # module github.com/Aleksey512/swarm-hpa
 ├── Dockerfile               # multi-stage image (alpine, non-root, CGO-free static)
 ├── .dockerignore            # trims the build context to go source
-├── deploy/                  # docker stack examples: stack.yml (direct socket) + stack.proxy.yml (least-privilege)
-├── .github/workflows/       # ci.yml (fmt/vet/lint/test/hadolint/build) + release.yml (GHCR image on v* tags)
+├── deploy/                  # docker stack examples for the DAEMON: stack.yml (direct socket) + stack.proxy.yml (least-privilege)
+├── examples/                # runnable demo WORKLOADS: cpu-autoscale (+loadgen.sh), prometheus-autoscale (+prometheus.yml), healer
+├── .github/workflows/       # ci.yml (fmt/vet/lint/test/hadolint/build/examples-validate) + release.yml (GHCR image on v* tags)
 ├── .ai-factory/             # AI Factory context (DESCRIPTION, ARCHITECTURE, ROADMAP, config, rules, plans)
 ├── .claude/skills/          # aif-*, golang-*, prometheus-label-strategy, docker-swarm-go-sdk
 └── skills-lock.json         # skills.sh lockfile
@@ -85,6 +86,7 @@ source layout follows the Explicit Architecture (ports & adapters) in
 |----------|------|-------------|
 | README | README.md | Project landing page |
 | Getting Started | docs/getting-started.md | Prerequisites, build, run, verify |
+| Examples | examples/README.md | Runnable autoscaling + healer demo stacks |
 | Configuration | docs/configuration.md | Daemon flags/env and service labels |
 | Metrics Providers | docs/metrics-providers.md | Docker stats vs Prometheus, routing, PromQL |
 | Observability | docs/observability.md | The daemon's own /metrics endpoint |

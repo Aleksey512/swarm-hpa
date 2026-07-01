@@ -105,3 +105,4 @@ export LOG_LEVEL=debug
 
 - [Getting Started](getting-started.md) — build and first run.
 - [Metrics Providers](metrics-providers.md) — choosing and configuring the metric source.
+- [Examples](../examples/README.md) — runnable stacks that put these labels to work.

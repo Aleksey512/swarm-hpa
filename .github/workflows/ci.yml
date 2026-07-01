@@ -72,3 +72,15 @@ jobs:
           build-args: |
             VERSION=ci
           tags: swarm-hpa:ci
+
+  examples-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Parse-only: `docker stack config` (preinstalled on the runner) validates
+      # the example stacks without needing an active swarm; shellcheck (also
+      # preinstalled) lints loadgen.sh via the make target's guarded step.
+      - name: Validate example stacks
+        run: make examples-validate

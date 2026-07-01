@@ -62,6 +62,7 @@ docker service update \
 | Guide | Description |
 |-------|-------------|
 | [Getting Started](docs/getting-started.md) | Prerequisites, build, run, verify |
+| [Examples](examples/README.md) | Runnable demos: CPU + Prometheus autoscaling and the stuck-task healer |
 | [Configuration](docs/configuration.md) | Daemon flags/env and `swarm.autoscaler.*` service labels |
 | [Metrics Providers](docs/metrics-providers.md) | Docker stats vs Prometheus, per-service routing, PromQL |
 | [Observability](docs/observability.md) | The daemon's own `/metrics` endpoint and metric catalog |
