@@ -1,0 +1,38 @@
+# Example Prometheus config for the prometheus-autoscale demo — NOT production.
+# =============================================================================
+# Scrapes every replica of the demo app and stamps a `service` label so the
+# daemon's templated PromQL query (`...{service="$SERVICE"}`) matches.
+#
+# WHY dns_sd on tasks.<service>:
+#   Docker Swarm's embedded DNS resolves `tasks.<service>` to the IPs of ALL
+#   tasks (replicas) of that service on the shared overlay network. Scraping each
+#   replica as its own target means `count(up{service="..."})` equals the replica
+#   count — which is what the per-replica rps query divides by.
+#
+# STACK-NAME COUPLING (important):
+#   These names assume you deploy the sibling stack as `promdemo`:
+#     docker stack deploy -c examples/prometheus-autoscale/stack.yml promdemo
+#   That makes the Swarm service name `promdemo_app`, so:
+#     - dns_sd target      = tasks.promdemo_app
+#     - injected label      = service="promdemo_app"
+#     - the daemon's $SERVICE placeholder expands to "promdemo_app" → they match.
+#   If you deploy under a different stack name, update BOTH the dns_sd `names`
+#   entry and the `service` relabel `replacement` below to `<stack>_app`.
+# =============================================================================
+global:
+  scrape_interval: 5s
+  scrape_timeout: 3s
+
+scrape_configs:
+  - job_name: demo-app
+    # Resolve all replica task IPs of promdemo_app on the overlay network.
+    dns_sd_configs:
+      - names:
+          - tasks.promdemo_app
+        type: A
+        port: 8080
+    relabel_configs:
+      # Stamp every scraped series with service="promdemo_app" so the daemon's
+      # query `http_requests_total{service="$SERVICE"}` selects exactly these.
+      - target_label: service
+        replacement: promdemo_app
