@@ -49,8 +49,8 @@ So this plan targets the concrete gaps the milestone still names:
 <!-- Commit checkpoint: 49-50 -->
 
 ### Phase 2: goroutine-leak & race coverage
-- [ ] Task 51: Add `go.uber.org/goleak`; add `TestMain` (`goleak.VerifyTestMain`) leak guards to `internal/app/reconciler` and `cmd/swarm-hpa`; narrow `IgnoreTopFunction` only where a documented stdlib goroutine trips it. `internal/app/reconciler/main_test.go`, `cmd/swarm-hpa/main_test.go`, `go.mod`, `go.sum`. (depends on 49, 50)
-- [ ] Task 52: Race/concurrency tests for `Cooldown` (`Allowed`/`Record`) and `Stabilizer` (`Recommend`) — N goroutines over multiple service IDs against `fakeClock`, clean under `make test-race`. `internal/app/reconciler/cooldown_race_test.go`, `stabilizer_race_test.go`. (independent)
+- [x] Task 51: Add `go.uber.org/goleak`; add `TestMain` (`goleak.VerifyTestMain`) leak guards to `internal/app/reconciler` and `cmd/swarm-hpa`; narrow `IgnoreTopFunction` only where a documented stdlib goroutine trips it. `internal/app/reconciler/main_test.go`, `cmd/swarm-hpa/main_test.go`, `go.mod`, `go.sum`. (depends on 49, 50)
+- [x] Task 52: Race/concurrency tests for `Cooldown` (`Allowed`/`Record`) and `Stabilizer` (`Recommend`) — N goroutines over multiple service IDs against `fakeClock`, clean under `make test-race`. `internal/app/reconciler/cooldown_race_test.go`, `stabilizer_race_test.go`. (independent)
 <!-- Commit checkpoint: 51-52 -->
 
 ### Phase 3: Fill pure decision-logic table-test gaps
