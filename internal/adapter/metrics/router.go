@@ -18,6 +18,7 @@ import (
 type Router struct {
 	dockerstats   port.MetricsProvider
 	prometheus    port.MetricsProvider // nil when no Prometheus URL is configured
+	agents        port.MetricsProvider // nil outside manager mode (no agent registry)
 	defaultSource string
 	logger        *slog.Logger
 }
@@ -25,17 +26,18 @@ type Router struct {
 // compile-time proof the router satisfies the core port.
 var _ port.MetricsProvider = (*Router)(nil)
 
-// NewRouter builds a Router over the available providers. prometheus may be nil
-// (no Prometheus URL configured); a service then requesting source=prometheus
-// gets a descriptive error rather than a silent wrong scale. A nil logger falls
-// back to slog.Default.
-func NewRouter(dockerstats, prometheus port.MetricsProvider, defaultSource string, logger *slog.Logger) *Router {
+// NewRouter builds a Router over the available providers. prometheus/agents may
+// be nil (no Prometheus URL configured; no agent registry); a service then
+// requesting that source gets a descriptive error rather than a silent wrong
+// scale. A nil logger falls back to slog.Default.
+func NewRouter(dockerstats, prometheus, agents port.MetricsProvider, defaultSource string, logger *slog.Logger) *Router {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Router{
 		dockerstats:   dockerstats,
 		prometheus:    prometheus,
+		agents:        agents,
 		defaultSource: defaultSource,
 		logger:        logger,
 	}
@@ -61,6 +63,11 @@ func (r *Router) Value(ctx context.Context, svc model.ManagedService) (float64, 
 			return 0, fmt.Errorf("metrics: service %s requests source=prometheus but PROMETHEUS_URL is not configured", svc.Ref.Name)
 		}
 		return r.prometheus.Value(ctx, svc)
+	case config.ProviderAgents:
+		if r.agents == nil {
+			return 0, fmt.Errorf("metrics: service %s requests source=agents but the agent registry is unavailable (manager mode only)", svc.Ref.Name)
+		}
+		return r.agents.Value(ctx, svc)
 	default:
 		return 0, fmt.Errorf("metrics: service %s has unknown source %q", svc.Ref.Name, source)
 	}

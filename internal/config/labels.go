@@ -148,10 +148,10 @@ func validatePolicy(p model.ServicePolicy) error {
 		return fmt.Errorf("%s: required", LabelMetric)
 	}
 	switch p.Source {
-	case "", ProviderDockerStats, ProviderPrometheus:
+	case "", ProviderDockerStats, ProviderPrometheus, ProviderAgents:
 		// empty = global default; otherwise must name a known provider.
 	default:
-		return fmt.Errorf("%s=%q: must be %s or %s", LabelSource, p.Source, ProviderDockerStats, ProviderPrometheus)
+		return fmt.Errorf("%s=%q: must be %s, %s or %s", LabelSource, p.Source, ProviderDockerStats, ProviderPrometheus, ProviderAgents)
 	}
 	return nil
 }

@@ -16,6 +16,10 @@ import (
 const (
 	ProviderDockerStats = "dockerstats"
 	ProviderPrometheus  = "prometheus"
+	// ProviderAgents aggregates per-task metrics reported by the per-node agent
+	// fleet (manager mode only). Unlike dockerstats it sees tasks on ALL nodes,
+	// so Docker-stats-style autoscaling works cluster-wide.
+	ProviderAgents = "agents"
 )
 
 // Runtime roles. A single binary runs as either a manager (the reconcile loop
@@ -185,15 +189,15 @@ func (c Config) Validate() error {
 // endpoint, rebalance thresholds). Agent-only fields are intentionally ignored.
 func (c Config) validateManager() error {
 	switch c.MetricsProvider {
-	case ProviderDockerStats:
+	case ProviderDockerStats, ProviderAgents:
 		// no extra requirements
 	case ProviderPrometheus:
 		if strings.TrimSpace(c.PrometheusURL) == "" {
 			return fmt.Errorf("prometheus_url is required when metrics_provider=%s", ProviderPrometheus)
 		}
 	default:
-		return fmt.Errorf("invalid metrics_provider %q (want %s|%s)",
-			c.MetricsProvider, ProviderDockerStats, ProviderPrometheus)
+		return fmt.Errorf("invalid metrics_provider %q (want %s|%s|%s)",
+			c.MetricsProvider, ProviderDockerStats, ProviderPrometheus, ProviderAgents)
 	}
 	if strings.TrimSpace(c.IngestAddr) == "" {
 		return fmt.Errorf("ingest_addr must not be empty in manager mode")

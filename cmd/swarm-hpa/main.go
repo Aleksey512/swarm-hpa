@@ -97,7 +97,7 @@ func runManager(ctx context.Context, cfg config.Config, cli *client.Client, logg
 	recorder := observability.NewRecorder(version, logger)
 	reg := registry.New(cfg.AgentStaleTimeout, port.SystemClock{}, nil, logger)
 
-	metricsProvider, err := metrics.New(cfg, cli, logger)
+	metricsProvider, err := metrics.New(cfg, cli, reg, logger)
 	if err != nil {
 		logger.Error("failed to build metrics provider", "err", err)
 		return 1

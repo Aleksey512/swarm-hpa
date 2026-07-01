@@ -118,7 +118,7 @@ the docs task / completion.)
 <!-- Commit checkpoint: T5–T6 → Commit 3 -->
 
 ### Phase 3: Distributed metrics provider
-- [ ] T7: Distributed metrics provider (`internal/adapter/metrics/distributed`) —
+- [x] T7: Distributed metrics provider (`internal/adapter/metrics/distributed`) —
   implements `port.MetricsProvider` by aggregating the registry snapshot per service;
   `source=agents` routing in router/factory. Fixes cluster-wide autoscaling. Tests.
   (depends on T5, T2)

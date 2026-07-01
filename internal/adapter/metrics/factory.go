@@ -9,6 +9,7 @@ import (
 
 	"github.com/docker/docker/client"
 
+	"github.com/Aleksey512/swarm-hpa/internal/adapter/metrics/distributed"
 	"github.com/Aleksey512/swarm-hpa/internal/adapter/metrics/dockerstats"
 	"github.com/Aleksey512/swarm-hpa/internal/adapter/metrics/prometheus"
 	"github.com/Aleksey512/swarm-hpa/internal/config"
@@ -16,11 +17,15 @@ import (
 )
 
 // New builds the daemon's metrics provider: a Router over dockerstats (always
-// available) and prometheus (built only when a Prometheus URL is configured),
-// defaulting unlabeled services to cfg.MetricsProvider.
-func New(cfg config.Config, cli *client.Client, logger *slog.Logger) (port.MetricsProvider, error) {
+// available), prometheus (built only when a Prometheus URL is configured), and
+// the agents provider (built only when a snapshot source is supplied — i.e. in
+// manager mode), defaulting unlabeled services to cfg.MetricsProvider.
+//
+// snapshot is the agent registry (nil outside manager mode). A nil snapshot with
+// metrics_provider=agents is a misconfiguration and returns an error.
+func New(cfg config.Config, cli *client.Client, snapshot distributed.Snapshotter, logger *slog.Logger) (port.MetricsProvider, error) {
 	switch cfg.MetricsProvider {
-	case config.ProviderDockerStats, config.ProviderPrometheus:
+	case config.ProviderDockerStats, config.ProviderPrometheus, config.ProviderAgents:
 		// known default source
 	default:
 		return nil, fmt.Errorf("metrics: unknown provider %q", cfg.MetricsProvider)
@@ -39,5 +44,12 @@ func New(cfg config.Config, cli *client.Client, logger *slog.Logger) (port.Metri
 		return nil, fmt.Errorf("metrics: metrics_provider=%s requires a prometheus URL", config.ProviderPrometheus)
 	}
 
-	return NewRouter(ds, pm, cfg.MetricsProvider, logger), nil
+	var agents port.MetricsProvider
+	if snapshot != nil {
+		agents = distributed.New(snapshot, logger)
+	} else if cfg.MetricsProvider == config.ProviderAgents {
+		return nil, fmt.Errorf("metrics: metrics_provider=%s requires the agent registry (manager mode)", config.ProviderAgents)
+	}
+
+	return NewRouter(ds, pm, agents, cfg.MetricsProvider, logger), nil
 }
