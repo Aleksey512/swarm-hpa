@@ -4,9 +4,9 @@ import "testing"
 
 func TestClampStep(t *testing.T) {
 	cases := []struct {
-		name                     string
+		name                      string
 		current, desired, maxStep uint64
-		want                     uint64
+		want                      uint64
 	}{
 		{"unlimited (maxStep 0)", 2, 10, 0, 10},
 		{"no change", 5, 5, 2, 5},

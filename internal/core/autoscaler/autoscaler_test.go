@@ -39,3 +39,28 @@ func TestDesired(t *testing.T) {
 		})
 	}
 }
+
+func TestClamp(t *testing.T) {
+	cases := []struct {
+		name      string
+		v, lo, hi uint64
+		want      uint64
+	}{
+		{"within range", 5, 1, 10, 5},
+		{"below lo", 0, 2, 10, 2},
+		{"above hi", 20, 1, 6, 6},
+		{"at lo", 2, 2, 10, 2},
+		{"at hi", 10, 1, 10, 10},
+		{"lo == hi == v", 4, 4, 4, 4},
+		// Degenerate lo > hi: branch order (v<lo first) defines the result.
+		{"degenerate lo>hi, v below lo -> lo", 5, 10, 3, 10},
+		{"degenerate lo>hi, v above hi -> hi", 20, 10, 3, 3},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := clamp(c.v, c.lo, c.hi); got != c.want {
+				t.Errorf("clamp(%d, %d, %d) = %d, want %d", c.v, c.lo, c.hi, got, c.want)
+			}
+		})
+	}
+}

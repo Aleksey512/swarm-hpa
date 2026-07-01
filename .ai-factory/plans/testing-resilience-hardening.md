@@ -54,9 +54,9 @@ So this plan targets the concrete gaps the milestone still names:
 <!-- Commit checkpoint: 51-52 -->
 
 ### Phase 3: Fill pure decision-logic table-test gaps
-- [ ] Task 53: Direct table-driven tests for `healer.parseConstraint` (spacing / operator order / empty sides / no-operator), `healer.longestPending` (empty / all-running / at-threshold boundary / first-wins), and `nodeSatisfies`+`nodeValue` (unknown key skipped, missing-label semantics). `internal/core/healer/healer_parse_test.go`. (independent)
-- [ ] Task 54: Table-driven tests for `model.TaskView.IsPending` & `model.NodeView.IsActive` (state/availability matrices incl. empty strings), `autoscaler.clamp` edge cases (`v==lo==hi`, `lo>hi`), and swarm mappers `toManagedService`/`toTaskView`/`toNodeView` (global/non-replicated, nil `Placement`, empty constraints, task/node availability states). `internal/core/model/{task,node}_test.go`, extend `autoscaler_test.go`, `internal/adapter/swarm/map_test.go`. (independent)
-- [ ] Task 55: Table-driven test for `Guard.Scale` direction-aware cooldown — up/down window suppression, cross-direction independence, no-op on `desired==current`, heal window independent; assert `ActionSuppressed` emission via `fakeRecorder`. `internal/app/reconciler/guard_cooldown_test.go`. (independent)
+- [x] Task 53: Direct table-driven tests for `healer.parseConstraint` (spacing / operator order / empty sides / no-operator), `healer.longestPending` (empty / all-running / at-threshold boundary / first-wins), and `nodeSatisfies`+`nodeValue` (unknown key skipped, missing-label semantics). `internal/core/healer/healer_parse_test.go`. (independent)
+- [x] Task 54: Table-driven tests for `model.TaskView.IsPending` & `model.NodeView.IsActive` (state/availability matrices incl. empty strings), `autoscaler.clamp` edge cases (`v==lo==hi`, `lo>hi`), and swarm mappers `toManagedService`/`toTaskView`/`toNodeView` (global/non-replicated, nil `Placement`, empty constraints, task/node availability states). `internal/core/model/{task,node}_test.go`, extend `autoscaler_test.go`, `internal/adapter/swarm/map_test.go`. (independent)
+- [x] Task 55: Table-driven test for `Guard.Scale` direction-aware cooldown — up/down window suppression, cross-direction independence, no-op on `desired==current`, heal window independent; assert `ActionSuppressed` emission via `fakeRecorder`. `internal/app/reconciler/guard_cooldown_test.go`. (independent)
 <!-- Commit checkpoint: 53-55 -->
 
 ### Phase 4: Resilience harness + CI
