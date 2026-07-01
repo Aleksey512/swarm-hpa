@@ -3,18 +3,14 @@ package main
 
 import (
 	"context"
-	"errors"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/Aleksey512/swarm-hpa/internal/adapter/metrics"
 	"github.com/Aleksey512/swarm-hpa/internal/adapter/observability"
 	swarmadapter "github.com/Aleksey512/swarm-hpa/internal/adapter/swarm"
-	"github.com/Aleksey512/swarm-hpa/internal/app/reconciler"
 	"github.com/Aleksey512/swarm-hpa/internal/config"
 	"github.com/Aleksey512/swarm-hpa/internal/core/port"
 )
@@ -70,42 +66,25 @@ func run() int {
 		return 1
 	}
 	recorder := observability.NewRecorder(version, logger)
-	clock := port.SystemClock{}
-	cooldown := reconciler.NewCooldown(clock)
-	cooldowns := reconciler.Cooldowns{ScaleUp: cfg.ScaleUpCooldown, ScaleDown: cfg.ScaleDownCooldown, Heal: cfg.Cooldown}
-	guard := reconciler.NewGuard(swarmCtl, cooldown, cooldowns, cfg.DryRun, recorder, logger)
-	stabilizer := reconciler.NewStabilizer(cfg.ScaleDownStabilizationWindow)
-	rec := reconciler.New(swarmCtl, metricsProvider, guard, clock, cfg.HealThreshold, recorder, stabilizer, cfg.MaxScaleStep, logger)
 
-	// Serve the daemon's own /metrics endpoint. Best-effort: a serve failure is
-	// logged but never stops the reconcile loop (the daemon's core job is
-	// scaling/healing).
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", recorder.Handler())
-	metricsSrv := &http.Server{Addr: cfg.MetricsAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	go func() {
-		logger.Info("metrics endpoint listening", "addr", cfg.MetricsAddr, "path", "/metrics")
-		if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("metrics server failed", "err", err)
-		}
-	}()
+	// Wire the composition root into a runnable daemon. buildApp does no I/O,
+	// so the only failure here is a programming error (a nil required dep).
+	application, err := buildApp(cfg, appDeps{
+		swarm:          swarmCtl,
+		metrics:        metricsProvider,
+		clock:          port.SystemClock{},
+		recorder:       recorder,
+		metricsHandler: recorder.Handler(),
+		logger:         logger,
+	})
+	if err != nil {
+		logger.Error("failed to build application", "err", err)
+		return 1
+	}
 
 	// Root context cancelled on SIGINT/SIGTERM for graceful shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	if err := rec.Run(ctx, cfg.PollInterval); err != nil {
-		logger.Error("reconcile loop failed", "err", err)
-		return 1
-	}
-
-	// Stop the metrics server with a bounded grace period.
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
-		logger.Error("metrics server shutdown failed", "err", err)
-	}
-
-	logger.Info("shutdown complete")
-	return 0
+	return application.run(ctx)
 }

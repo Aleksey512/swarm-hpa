@@ -25,14 +25,17 @@ type Reconciler struct {
 	stabilizer    *Stabilizer
 	maxStep       uint64
 	logger        *slog.Logger
+	tickSource    TickSource
+	customTick    bool
 }
 
 // New constructs a Reconciler. healThreshold is the minimum time a task must be
 // pending before the healer treats the service as stuck; stabilizer dampens
 // scale-downs and maxStep caps a scaling action's magnitude (0 = unlimited). A
 // nil recorder falls back to a no-op, a nil stabilizer to a disabled one, a nil
-// logger to slog.Default, and a nil clock to the system clock.
-func New(swarm port.SwarmController, metrics port.MetricsProvider, guard *Guard, clock port.Clock, healThreshold time.Duration, recorder port.Recorder, stabilizer *Stabilizer, maxStep uint64, logger *slog.Logger) *Reconciler {
+// logger to slog.Default, and a nil clock to the system clock. Optional opts
+// (e.g. WithTickSource) are applied last so they can override defaults.
+func New(swarm port.SwarmController, metrics port.MetricsProvider, guard *Guard, clock port.Clock, healThreshold time.Duration, recorder port.Recorder, stabilizer *Stabilizer, maxStep uint64, logger *slog.Logger, opts ...Option) *Reconciler {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -45,7 +48,7 @@ func New(swarm port.SwarmController, metrics port.MetricsProvider, guard *Guard,
 	if stabilizer == nil {
 		stabilizer = NewStabilizer(0)
 	}
-	return &Reconciler{
+	r := &Reconciler{
 		swarm:         swarm,
 		metrics:       metrics,
 		guard:         guard,
@@ -55,7 +58,12 @@ func New(swarm port.SwarmController, metrics port.MetricsProvider, guard *Guard,
 		stabilizer:    stabilizer,
 		maxStep:       maxStep,
 		logger:        logger,
+		tickSource:    defaultTickSource,
 	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 // Run observes Swarm immediately and then on every interval tick, until ctx is
@@ -63,9 +71,12 @@ func New(swarm port.SwarmController, metrics port.MetricsProvider, guard *Guard,
 // stops the loop.
 func (r *Reconciler) Run(ctx context.Context, interval time.Duration) error {
 	r.logger.Info("reconcile loop started", "interval", interval)
+	if r.customTick {
+		r.logger.Debug("custom tick source injected (non-default)")
+	}
 
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	ticks, stop := r.tickSource(interval)
+	defer stop()
 
 	r.observe(ctx)
 	for {
@@ -73,7 +84,7 @@ func (r *Reconciler) Run(ctx context.Context, interval time.Duration) error {
 		case <-ctx.Done():
 			r.logger.Info("reconcile loop stopping", "reason", ctx.Err())
 			return nil
-		case <-ticker.C:
+		case <-ticks:
 			r.observe(ctx)
 		}
 	}
