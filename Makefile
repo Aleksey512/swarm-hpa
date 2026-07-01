@@ -7,9 +7,10 @@ PKGS     := ./...
 VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS  := -ldflags "-s -w -X main.version=$(VERSION)"
 GOLANGCI := golangci-lint
+IMAGE    ?= ghcr.io/aleksey512/swarm-hpa
 
 .DEFAULT_GOAL := build
-.PHONY: build run test test-race test-integration cover lint fmt fmt-check vet tidy clean help
+.PHONY: build run test test-race test-integration cover lint fmt fmt-check vet tidy clean help docker-build docker-run docker-push
 
 build: ## Build the daemon binary into bin/
 	@mkdir -p $(BIN_DIR)
@@ -17,6 +18,16 @@ build: ## Build the daemon binary into bin/
 
 run: ## Run the daemon (pass flags via ARGS="--dry-run")
 	go run $(MAIN) $(ARGS)
+
+docker-build: ## Build the Docker image, tagged :$(VERSION) and :latest
+	docker build --build-arg VERSION=$(VERSION) -t $(IMAGE):$(VERSION) -t $(IMAGE):latest .
+
+docker-run: ## Run the image locally with the Docker socket mounted (dry-run stays on; pass ARGS=...)
+	docker run --rm -v /var/run/docker.sock:/var/run/docker.sock $(IMAGE):latest $(ARGS)
+
+docker-push: ## Push the image tags to the registry (override with IMAGE=...)
+	docker push $(IMAGE):$(VERSION)
+	docker push $(IMAGE):latest
 
 test: ## Run unit tests
 	go test $(PKGS)

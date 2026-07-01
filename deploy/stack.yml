@@ -1,0 +1,70 @@
+# Swarm HPA — simple deployment (direct Docker socket).
+#
+#   IMAGE=ghcr.io/aleksey512/swarm-hpa TAG=latest \
+#     docker stack deploy -c deploy/stack.yml swarm-hpa
+#
+# The daemon MUST run on a manager node (the Swarm services/tasks/nodes APIs are
+# manager-only). Dry-run is ON by default — set DRY_RUN=false to enable real
+# scaling/healing. For a genuinely non-root, least-privilege setup, use
+# deploy/stack.proxy.yml instead (see the socket note below).
+version: "3.8"
+
+services:
+  swarm-hpa:
+    image: ${IMAGE:-ghcr.io/aleksey512/swarm-hpa}:${TAG:-latest}
+
+    # Runs as root (uid 0) ON PURPOSE: the bind-mounted /var/run/docker.sock is
+    # owned root:docker, and a non-root user cannot open it. Root is still tightly
+    # confined below (all capabilities dropped, no new privileges, read-only
+    # rootfs). Want non-root? Use deploy/stack.proxy.yml (talks TCP, no socket).
+    user: "0:0"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    environment:
+      DRY_RUN: "true"            # safety default — log intended actions, apply none
+      LOG_LEVEL: "info"
+      LOG_FORMAT: "json"
+      POLL_INTERVAL: "15s"
+      METRICS_ADDR: ":9095"
+      METRICS_PROVIDER: "dockerstats"
+      # For Prometheus-backed metrics instead of Docker stats:
+      # METRICS_PROVIDER: "prometheus"
+      # PROMETHEUS_URL: "http://prometheus:9090"
+
+    ports:
+      # The daemon's own /metrics (optional — you may prefer to scrape it over an
+      # internal overlay network rather than publishing it).
+      - target: 9095
+        published: 9095
+        protocol: tcp
+
+    volumes:
+      # NOTE: ":ro" on the socket does NOT restrict Docker API writes —
+      # ServiceUpdate (scale/heal) still works. It only makes the socket *file*
+      # read-only. For a real least-privilege API surface, use the socket proxy
+      # in deploy/stack.proxy.yml.
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        read_only: true
+
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: any
+        delay: 5s
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+        reservations:
+          cpus: "0.05"
+          memory: 32M

@@ -51,8 +51,8 @@ Everything packaging-related is **absent**: no `Dockerfile`, `.dockerignore`, co
 <!-- Commit checkpoint: 58-60 -->
 
 ### Phase 2: Build + Swarm deploy
-- [ ] Task 61: Makefile docker targets — `IMAGE ?= ghcr.io/aleksey512/swarm-hpa`, `docker-build`/`docker-run`/`docker-push` reusing `VERSION`; update `.PHONY`/help. `Makefile`. (depends on 59)
-- [ ] Task 62: Swarm stack examples — `deploy/stack.yml` (manager placement, `read_only`, non-root, `cap_drop [ALL]`, `no-new-privileges`, env incl. `DRY_RUN=true`, socket `:ro` + caveat) and `deploy/stack.proxy.yml` (`tecnativa/docker-socket-proxy` with `SERVICES/TASKS/NODES/POST=1`, `DOCKER_HOST=tcp://docker-socket-proxy:2375`, no socket on the daemon). `deploy/stack.yml`, `deploy/stack.proxy.yml`. (depends on 59)
+- [x] Task 61: Makefile docker targets — `IMAGE ?= ghcr.io/aleksey512/swarm-hpa`, `docker-build`/`docker-run`/`docker-push` reusing `VERSION`; update `.PHONY`/help. `Makefile`. (depends on 59)
+- [x] Task 62: Swarm stack examples — `deploy/stack.yml` (manager placement, `read_only`, non-root, `cap_drop [ALL]`, `no-new-privileges`, env incl. `DRY_RUN=true`, socket `:ro` + caveat) and `deploy/stack.proxy.yml` (`tecnativa/docker-socket-proxy` with `SERVICES/TASKS/NODES/POST=1`, `DOCKER_HOST=tcp://docker-socket-proxy:2375`, no socket on the daemon). `deploy/stack.yml`, `deploy/stack.proxy.yml`. (depends on 59)
 <!-- Commit checkpoint: 61-62 -->
 
 ### Phase 3: Release + docs
