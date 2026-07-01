@@ -20,33 +20,62 @@ const (
 	LabelSource = "swarm.autoscaler.source"
 	// LabelQuery is the PromQL expression used when the source is prometheus.
 	LabelQuery = "swarm.autoscaler.query"
+	// LabelHeal opts a service into stuck-pending healing independently of
+	// autoscaling. When absent, healing follows LabelEnabled (an autoscaled
+	// service is healed too). "true" enables heal-only — no autoscaler policy is
+	// required, so a placement-pinned singleton can be healed without pretending
+	// to autoscale. "false" opts an autoscaled service out of healing.
+	LabelHeal = "swarm.autoscaler.heal"
 )
 
-// ParsePolicy parses swarm.autoscaler.* labels into a ServicePolicy.
+// ParsePolicy parses swarm.autoscaler.* labels into a ServicePolicy and resolves
+// the two independent opt-ins:
 //
-// managed is false (with a nil error) when the service has not opted in — the
-// enabled label is absent or not exactly "true" — and the caller should skip it
-// silently. When managed is true the policy is validated; a non-nil error means
-// the service opted in but is misconfigured, and the caller should skip it and
-// log the reason.
+//   - autoscale: LabelEnabled=="true" AND a valid min/max/metric/target policy.
+//   - heal: LabelHeal when present (parsed as a bool), otherwise defaults to the
+//     enabled state (so an autoscaled service is healed too, as before).
+//
+// A service is "managed" when autoscale || heal. When neither holds both flags
+// are false (with a nil error) and the caller should skip it silently. A non-nil
+// error means the service opted in but is misconfigured (invalid autoscaler
+// policy, or an unparseable heal value) and the caller should skip it and log
+// the reason.
+//
+// Heal-only services (heal without enabled) need no min/max/metric/target — the
+// returned policy is the zero value and must not be used for scaling.
 //
 // The function is pure: no logging, no I/O.
-func ParsePolicy(labels map[string]string) (policy model.ServicePolicy, managed bool, err error) {
-	if labels[LabelEnabled] != "true" {
-		return model.ServicePolicy{}, false, nil
+func ParsePolicy(labels map[string]string) (policy model.ServicePolicy, autoscale, heal bool, err error) {
+	enabled := labels[LabelEnabled] == "true"
+
+	// Heal defaults to the enabled state; an explicit heal label overrides it.
+	heal = enabled
+	if raw, ok := labels[LabelHeal]; ok && raw != "" {
+		v, perr := strconv.ParseBool(raw)
+		if perr != nil {
+			return model.ServicePolicy{}, false, false, fmt.Errorf("%s=%q: %w", LabelHeal, raw, perr)
+		}
+		heal = v
 	}
 
+	if !enabled {
+		// Not autoscaled: heal-only (heal=true) or not opted in at all. No policy
+		// is required in either case.
+		return model.ServicePolicy{}, false, heal, nil
+	}
+
+	// Autoscaling opted in → a full, valid policy is required.
 	minReplicas, err := parseUintLabel(labels, LabelMin)
 	if err != nil {
-		return model.ServicePolicy{}, true, err
+		return model.ServicePolicy{}, false, false, err
 	}
 	maxReplicas, err := parseUintLabel(labels, LabelMax)
 	if err != nil {
-		return model.ServicePolicy{}, true, err
+		return model.ServicePolicy{}, false, false, err
 	}
 	target, err := parseFloatLabel(labels, LabelTarget)
 	if err != nil {
-		return model.ServicePolicy{}, true, err
+		return model.ServicePolicy{}, false, false, err
 	}
 
 	policy = model.ServicePolicy{
@@ -59,9 +88,9 @@ func ParsePolicy(labels map[string]string) (policy model.ServicePolicy, managed 
 		Query:   labels[LabelQuery],
 	}
 	if err := validatePolicy(policy); err != nil {
-		return model.ServicePolicy{}, true, err
+		return model.ServicePolicy{}, false, false, err
 	}
-	return policy, true, nil
+	return policy, true, heal, nil
 }
 
 func parseUintLabel(labels map[string]string, key string) (uint64, error) {

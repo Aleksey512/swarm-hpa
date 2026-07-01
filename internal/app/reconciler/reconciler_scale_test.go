@@ -49,6 +49,8 @@ func scaleSvc(replicas uint64) model.ManagedService {
 		Replicas:   replicas,
 		Replicated: true,
 		Policy:     model.ServicePolicy{Enabled: true, Min: 1, Max: 10, Metric: "cpu", Target: 80},
+		Autoscale:  true,
+		Heal:       true,
 	}
 }
 

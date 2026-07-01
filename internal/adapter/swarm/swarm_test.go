@@ -116,6 +116,79 @@ func TestToManagedServiceNilReplicas(t *testing.T) {
 	}
 }
 
+func TestToManagedServiceHealOnly(t *testing.T) {
+	// A placement-pinned singleton opted into healing only — no autoscaler policy.
+	svc := dswarm.Service{
+		ID: "rmq",
+		Spec: dswarm.ServiceSpec{
+			Annotations: dswarm.Annotations{Name: "rabbitmq-01", Labels: map[string]string{"swarm.autoscaler.heal": "true"}},
+			Mode:        dswarm.ServiceMode{Replicated: &dswarm.ReplicatedService{}},
+			TaskTemplate: dswarm.TaskSpec{
+				Placement: &dswarm.Placement{Constraints: []string{"node.labels.nodeNum==1"}},
+			},
+		},
+	}
+	ms, err := toManagedService(svc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ms.Autoscale {
+		t.Error("heal-only service must not be autoscaled")
+	}
+	if !ms.Heal {
+		t.Error("Heal should be true")
+	}
+	if ms.Policy.Enabled {
+		t.Errorf("policy must be the zero value for heal-only, got %+v", ms.Policy)
+	}
+	if len(ms.Constraints) != 1 {
+		t.Errorf("constraints = %v", ms.Constraints)
+	}
+}
+
+func TestToManagedServiceHealFalseOptOut(t *testing.T) {
+	labels := optedInLabels()
+	labels["swarm.autoscaler.heal"] = "false"
+	svc := dswarm.Service{
+		ID:   "web",
+		Spec: dswarm.ServiceSpec{Annotations: dswarm.Annotations{Name: "web", Labels: labels}},
+	}
+	ms, err := toManagedService(svc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ms.Autoscale {
+		t.Error("Autoscale should be true")
+	}
+	if ms.Heal {
+		t.Error("Heal should be false (explicit opt-out)")
+	}
+}
+
+func TestAdapterManagedServicesDedupe(t *testing.T) {
+	// The fake ignores the label filter and returns the same service for BOTH the
+	// enabled=true and heal=true queries; the adapter must dedupe by service ID.
+	reps := uint64(1)
+	svc := dswarm.Service{
+		ID: "both",
+		Spec: dswarm.ServiceSpec{
+			Annotations: dswarm.Annotations{Name: "both", Labels: optedInLabels()},
+			Mode:        dswarm.ServiceMode{Replicated: &dswarm.ReplicatedService{Replicas: &reps}},
+		},
+	}
+	a := &Adapter{cli: &fakeDockerAPI{services: []dswarm.Service{svc}}, logger: discardLogger()}
+	got, err := a.ManagedServices(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 service after dedupe, got %d", len(got))
+	}
+	if !got[0].Autoscale || !got[0].Heal {
+		t.Errorf("enabled service should autoscale+heal, got autoscale=%v heal=%v", got[0].Autoscale, got[0].Heal)
+	}
+}
+
 func TestToManagedServiceMisconfigured(t *testing.T) {
 	svc := dswarm.Service{
 		Spec: dswarm.ServiceSpec{

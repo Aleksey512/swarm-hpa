@@ -28,6 +28,8 @@ func metricSvcFake() *healFake {
 			Ref:        model.ServiceRef{ID: "s1", Name: "web"},
 			Replicated: true,
 			Policy:     model.ServicePolicy{Enabled: true, Min: 1, Max: 5, Metric: "cpu", Target: 80},
+			Autoscale:  true,
+			Heal:       true,
 		},
 	}
 }

@@ -134,39 +134,52 @@ func (r *Reconciler) observe(ctx context.Context) {
 			"replicas", svc.Replicas,
 			"running", running,
 			"pending", pending,
+			"autoscale", svc.Autoscale,
+			"heal", svc.Heal,
 			"min", svc.Policy.Min,
 			"max", svc.Policy.Max,
 			"metric", svc.Policy.Metric,
 		)
 
-		// Read the metric, turn it into a desired replica count, and apply it
-		// through the Guard (which enforces dry-run + cooldown + no-op).
-		// Missing data is normal, not an error.
-		if val, err := r.metrics.Value(ctx, svc); err == nil {
-			// Desired (proportional + tolerance) → stabilize (dampen scale-down)
-			// → ClampStep (cap magnitude) → guard (dry-run + per-direction cooldown).
-			desired := autoscaler.Desired(svc.Replicas, val, svc.Policy)
-			stabilized := r.stabilizer.Recommend(svc.Ref.ID, svc.Replicas, desired, now)
-			final := autoscaler.ClampStep(svc.Replicas, stabilized, r.maxStep)
-			r.logger.Info("scaling decision",
-				"service", svc.Ref.Name, "metric", svc.Policy.Metric,
-				"value", val, "target", svc.Policy.Target,
-				"current", svc.Replicas, "desired", desired,
-				"stabilized", stabilized, "final", final)
-			if err := r.guard.Scale(ctx, svc, final); err != nil {
-				r.logger.Error("scale failed", "service", svc.Ref.Name, "err", err)
+		// Autoscaling branch — only for services opted into scaling. Read the
+		// metric, turn it into a desired replica count, and apply it through the
+		// Guard (dry-run + cooldown + no-op). Missing data is normal, not an error.
+		// Heal-only services skip this entirely (no pointless metric reads).
+		if svc.Autoscale {
+			if val, err := r.metrics.Value(ctx, svc); err == nil {
+				// Desired (proportional + tolerance) → stabilize (dampen scale-down)
+				// → ClampStep (cap magnitude) → guard (dry-run + per-direction cooldown).
+				desired := autoscaler.Desired(svc.Replicas, val, svc.Policy)
+				stabilized := r.stabilizer.Recommend(svc.Ref.ID, svc.Replicas, desired, now)
+				final := autoscaler.ClampStep(svc.Replicas, stabilized, r.maxStep)
+				r.logger.Info("scaling decision",
+					"service", svc.Ref.Name, "metric", svc.Policy.Metric,
+					"value", val, "target", svc.Policy.Target,
+					"current", svc.Replicas, "desired", desired,
+					"stabilized", stabilized, "final", final)
+				if err := r.guard.Scale(ctx, svc, final); err != nil {
+					r.logger.Error("scale failed", "service", svc.Ref.Name, "err", err)
+				}
+			} else if errors.Is(err, model.ErrNoMetricData) {
+				r.logger.Debug("no metric data (skipping scale)", "service", svc.Ref.Name)
+			} else {
+				r.logger.Error("metric read failed", "service", svc.Ref.Name, "err", err)
+				r.recorder.Error("metric")
 			}
-		} else if errors.Is(err, model.ErrNoMetricData) {
-			r.logger.Debug("no metric data (skipping scale)", "service", svc.Ref.Name)
 		} else {
-			r.logger.Error("metric read failed", "service", svc.Ref.Name, "err", err)
-			r.recorder.Error("metric")
+			r.logger.Debug("autoscale disabled (heal-only); skipping metric read", "service", svc.Ref.Name)
 		}
 
-		// Precise stuck-pending detection (moby/moby#42215): heal only when the
-		// full signature holds — constraints present, a task pending beyond the
+		// Healing branch — only for services opted into healing (the heal label, or
+		// an autoscaled service that has not opted out via heal=false). Precise
+		// stuck-pending detection (moby/moby#42215): heal only when the full
+		// signature holds — constraints present, a task pending beyond the
 		// threshold, and a constraint-satisfying node now Active+Ready. Heal the
 		// service ONCE per tick, never once per pending task.
+		if !svc.Heal {
+			r.logger.Debug("heal disabled; skipping heal", "service", svc.Ref.Name)
+			continue
+		}
 		verdict := healer.Detect(svc, tasks, nodes, r.healThreshold, now)
 		if !verdict.Stuck {
 			r.logger.Debug("not stuck (skipping heal)", "service", svc.Ref.Name, "reason", verdict.Reason)

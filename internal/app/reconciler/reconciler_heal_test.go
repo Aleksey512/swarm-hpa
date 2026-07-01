@@ -44,6 +44,8 @@ func constrainedSvc() model.ManagedService {
 		Replicated:  true,
 		Constraints: []string{"node.labels.nodeNum==1"},
 		Policy:      model.ServicePolicy{Enabled: true, Min: 1, Max: 5, Metric: "cpu", Target: 80},
+		Autoscale:   true,
+		Heal:        true,
 	}
 }
 

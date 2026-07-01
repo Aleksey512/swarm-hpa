@@ -103,6 +103,8 @@ func TestRunObservesServicesAndExits(t *testing.T) {
 			Replicated:  true,
 			Policy:      model.ServicePolicy{Enabled: true, Min: 1, Max: 5, Metric: "cpu", Target: 80},
 			Constraints: []string{"node.labels.nodeNum==1"},
+			Autoscale:   true,
+			Heal:        true,
 		}},
 		tasks: map[string][]model.TaskView{
 			"s1": {

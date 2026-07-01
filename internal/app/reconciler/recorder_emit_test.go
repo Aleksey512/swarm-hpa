@@ -58,6 +58,8 @@ func (c emitController) ManagedServices(context.Context) ([]model.ManagedService
 		Ref:        model.ServiceRef{ID: "s1", Name: "web"},
 		Replicated: true,
 		Policy:     model.ServicePolicy{Enabled: true, Min: 1, Max: 3, Metric: "cpu", Target: 80},
+		Autoscale:  true,
+		Heal:       true,
 	}}, nil
 }
 func (c emitController) Tasks(context.Context, string) ([]model.TaskView, error) {

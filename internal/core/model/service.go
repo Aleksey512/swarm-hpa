@@ -26,10 +26,17 @@ type ServicePolicy struct {
 
 // ManagedService is an opted-in service together with its current state and
 // parsed policy. It is a read-only projection produced by the swarm adapter.
+//
+// A service opts into two independent capabilities: Autoscale (adjust replicas
+// from a metric) and Heal (unstick stuck-pending tasks). At least one is true
+// for a managed service. Policy is only meaningful when Autoscale is true; for a
+// heal-only service it is the zero value.
 type ManagedService struct {
 	Ref         ServiceRef
 	Replicas    uint64 // current desired replicas (replicated services)
 	Replicated  bool   // false for global-mode services
 	Policy      ServicePolicy
 	Constraints []string // placement constraints, e.g. "node.labels.nodeNum==1"
+	Autoscale   bool     // opted into metric-driven scaling (Policy is valid)
+	Heal        bool     // opted into stuck-pending healing
 }

@@ -46,34 +46,59 @@ func New(cli *client.Client, logger *slog.Logger) *Adapter {
 	return &Adapter{cli: cli, logger: logger}
 }
 
-// ManagedServices lists services opted in via swarm.autoscaler.enabled=true,
-// parses each policy, and maps them to model.ManagedService. A service that
-// opted in but is misconfigured is logged at WARN and skipped (never fatal).
+// ManagedServices lists services opted into autoscaling (swarm.autoscaler.enabled
+// =true) OR healing (swarm.autoscaler.heal=true), parses each, and maps them to
+// model.ManagedService. A service that opted in but is misconfigured is logged at
+// WARN and skipped (never fatal).
+//
+// A single Docker label filter cannot OR values, so the two opt-in labels are
+// queried separately and merged, deduped by service ID (a service may carry both).
 func (a *Adapter) ManagedServices(ctx context.Context) ([]model.ManagedService, error) {
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 
-	f := filters.NewArgs(filters.Arg("label", config.LabelEnabled+"=true"))
-	services, err := a.cli.ServiceList(ctx, dswarm.ServiceListOptions{Filters: f})
+	enabledSvcs, err := a.listByLabel(ctx, config.LabelEnabled+"=true")
 	if err != nil {
-		return nil, fmt.Errorf("service list: %w", err)
+		return nil, err
+	}
+	healSvcs, err := a.listByLabel(ctx, config.LabelHeal+"=true")
+	if err != nil {
+		return nil, err
 	}
 
-	managed := make([]model.ManagedService, 0, len(services))
-	for _, svc := range services {
-		ms, err := toManagedService(svc)
-		if err != nil {
-			a.logger.Warn("skipping misconfigured managed service",
-				"service", svc.Spec.Name, "id", svc.ID, "err", err)
-			continue
+	seen := make(map[string]struct{}, len(enabledSvcs)+len(healSvcs))
+	managed := make([]model.ManagedService, 0, len(enabledSvcs)+len(healSvcs))
+	for _, group := range [][]dswarm.Service{enabledSvcs, healSvcs} {
+		for _, svc := range group {
+			if _, dup := seen[svc.ID]; dup {
+				continue
+			}
+			seen[svc.ID] = struct{}{}
+			ms, err := toManagedService(svc)
+			if err != nil {
+				a.logger.Warn("skipping misconfigured managed service",
+					"service", svc.Spec.Name, "id", svc.ID, "err", err)
+				continue
+			}
+			a.logger.Debug("observed managed service",
+				"service", ms.Ref.Name, "replicas", ms.Replicas,
+				"autoscale", ms.Autoscale, "heal", ms.Heal,
+				"min", ms.Policy.Min, "max", ms.Policy.Max, "metric", ms.Policy.Metric)
+			managed = append(managed, ms)
 		}
-		a.logger.Debug("observed managed service",
-			"service", ms.Ref.Name, "replicas", ms.Replicas,
-			"min", ms.Policy.Min, "max", ms.Policy.Max, "metric", ms.Policy.Metric)
-		managed = append(managed, ms)
 	}
 	a.logger.Debug("managed services observed", "count", len(managed))
 	return managed, nil
+}
+
+// listByLabel returns the services carrying an exact "key=value" label.
+func (a *Adapter) listByLabel(ctx context.Context, label string) ([]dswarm.Service, error) {
+	f := filters.NewArgs(filters.Arg("label", label))
+	services, err := a.cli.ServiceList(ctx, dswarm.ServiceListOptions{Filters: f})
+	if err != nil {
+		return nil, fmt.Errorf("service list (%s): %w", label, err)
+	}
+	return services, nil
 }
 
 // Tasks returns the desired-state-running tasks of a single service.
@@ -117,12 +142,12 @@ func (a *Adapter) Nodes(ctx context.Context) ([]model.NodeView, error) {
 // toManagedService maps an SDK service to a model.ManagedService, parsing its
 // policy from labels. It is pure (no client, no logging) so it is unit-testable.
 func toManagedService(svc dswarm.Service) (model.ManagedService, error) {
-	policy, managed, err := config.ParsePolicy(svc.Spec.Labels)
+	policy, autoscale, heal, err := config.ParsePolicy(svc.Spec.Labels)
 	if err != nil {
 		return model.ManagedService{}, err
 	}
-	if !managed {
-		return model.ManagedService{}, fmt.Errorf("not opted in (%s != true)", config.LabelEnabled)
+	if !autoscale && !heal {
+		return model.ManagedService{}, fmt.Errorf("not opted in (%s/%s)", config.LabelEnabled, config.LabelHeal)
 	}
 
 	var replicas uint64
@@ -145,6 +170,8 @@ func toManagedService(svc dswarm.Service) (model.ManagedService, error) {
 		Replicated:  replicated,
 		Policy:      policy,
 		Constraints: constraints,
+		Autoscale:   autoscale,
+		Heal:        heal,
 	}, nil
 }
 
