@@ -2,10 +2,8 @@ package dockerstats
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
@@ -13,6 +11,7 @@ import (
 	dswarm "github.com/docker/docker/api/types/swarm"
 	"github.com/docker/docker/client"
 
+	"github.com/Aleksey512/swarm-hpa/internal/adapter/statsutil"
 	"github.com/Aleksey512/swarm-hpa/internal/core/model"
 	"github.com/Aleksey512/swarm-hpa/internal/core/port"
 )
@@ -51,7 +50,7 @@ func New(cli *client.Client, logger *slog.Logger) *Provider {
 
 // Value averages the service's scaling metric across its locally-readable tasks.
 func (p *Provider) Value(ctx context.Context, svc model.ManagedService) (float64, error) {
-	compute, err := computeFor(svc.Policy.Metric)
+	compute, err := statsutil.ComputeFor(svc.Policy.Metric)
 	if err != nil {
 		return 0, err
 	}
@@ -70,11 +69,11 @@ func (p *Provider) Value(ctx context.Context, svc model.ManagedService) (float64
 	var sum float64
 	var n int
 	for _, t := range tasks {
-		cid := containerID(t)
+		cid := statsutil.ContainerID(t)
 		if cid == "" {
 			continue
 		}
-		stats, err := p.readStats(ctx, cid)
+		stats, err := statsutil.ReadStats(ctx, p.cli, cid, callTimeout)
 		if err != nil {
 			p.logger.Debug("dockerstats: skipping task (stats unavailable, likely remote node)",
 				"service", svc.Ref.Name, "container", cid, "err", err)
@@ -99,51 +98,4 @@ func (p *Provider) Value(ctx context.Context, svc model.ManagedService) (float64
 	p.logger.Debug("dockerstats: service metric",
 		"service", svc.Ref.Name, "metric", svc.Policy.Metric, "value", avg, "tasks", n)
 	return avg, nil
-}
-
-// computeFor maps a policy metric name to a stats compute function.
-func computeFor(metric string) (func(container.StatsResponse) (float64, bool), error) {
-	switch strings.ToLower(strings.TrimSpace(metric)) {
-	case model.MetricCPU, "":
-		return cpuPercent, nil
-	case model.MetricMemory, "mem":
-		return memPercent, nil
-	default:
-		return nil, fmt.Errorf("dockerstats: unsupported metric %q (want cpu|memory)", metric)
-	}
-}
-
-func containerID(t dswarm.Task) string {
-	if t.Status.ContainerStatus == nil {
-		return ""
-	}
-	return t.Status.ContainerStatus.ContainerID
-}
-
-// readStats reads up to two stream frames for a container. The second frame
-// carries PreCPUStats (the previous sample), which the CPU% formula needs;
-// memory% needs only one. Returns the most recent frame read.
-func (p *Provider) readStats(ctx context.Context, containerID string) (container.StatsResponse, error) {
-	statsCtx, cancel := context.WithTimeout(ctx, callTimeout)
-	defer cancel()
-
-	resp, err := p.cli.ContainerStats(statsCtx, containerID, true)
-	if err != nil {
-		return container.StatsResponse{}, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	dec := json.NewDecoder(resp.Body)
-	var last container.StatsResponse
-	for i := 0; i < 2; i++ {
-		var s container.StatsResponse
-		if err := dec.Decode(&s); err != nil {
-			if i == 0 {
-				return container.StatsResponse{}, err
-			}
-			break // at least one frame decoded
-		}
-		last = s
-	}
-	return last, nil
 }

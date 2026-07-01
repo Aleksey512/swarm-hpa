@@ -1,4 +1,4 @@
-package dockerstats
+package statsutil
 
 import (
 	"testing"
@@ -24,23 +24,23 @@ func TestCPUPercent(t *testing.T) {
 			SystemUsage: 10000,
 		},
 	}
-	got, ok := cpuPercent(s)
+	got, ok := CPUPercent(s)
 	if !ok || !approx(got, 40) {
-		t.Errorf("cpuPercent = %v ok=%v, want 40/true", got, ok)
+		t.Errorf("CPUPercent = %v ok=%v, want 40/true", got, ok)
 	}
 }
 
 func TestCPUPercentNonPositiveDelta(t *testing.T) {
-	if _, ok := cpuPercent(container.StatsResponse{}); ok {
+	if _, ok := CPUPercent(container.StatsResponse{}); ok {
 		t.Error("zero deltas must yield ok=false")
 	}
 }
 
 func TestMemPercent(t *testing.T) {
 	s := container.StatsResponse{MemoryStats: container.MemoryStats{Usage: 500, Limit: 1000}}
-	got, ok := memPercent(s)
+	got, ok := MemPercent(s)
 	if !ok || !approx(got, 50) {
-		t.Errorf("memPercent = %v ok=%v, want 50/true", got, ok)
+		t.Errorf("MemPercent = %v ok=%v, want 50/true", got, ok)
 	}
 }
 
@@ -48,14 +48,25 @@ func TestMemPercentExcludesInactiveCache(t *testing.T) {
 	s := container.StatsResponse{MemoryStats: container.MemoryStats{
 		Usage: 500, Limit: 1000, Stats: map[string]uint64{"inactive_file": 100},
 	}}
-	got, ok := memPercent(s)
+	got, ok := MemPercent(s)
 	if !ok || !approx(got, 40) {
-		t.Errorf("memPercent with cache = %v, want 40", got)
+		t.Errorf("MemPercent with cache = %v, want 40", got)
 	}
 }
 
 func TestMemPercentZeroLimit(t *testing.T) {
-	if _, ok := memPercent(container.StatsResponse{MemoryStats: container.MemoryStats{Usage: 100}}); ok {
+	if _, ok := MemPercent(container.StatsResponse{MemoryStats: container.MemoryStats{Usage: 100}}); ok {
 		t.Error("zero limit must yield ok=false")
+	}
+}
+
+func TestComputeFor(t *testing.T) {
+	for _, metric := range []string{"cpu", "", "memory", "mem", "CPU"} {
+		if _, err := ComputeFor(metric); err != nil {
+			t.Errorf("ComputeFor(%q) unexpected error: %v", metric, err)
+		}
+	}
+	if _, err := ComputeFor("disk"); err == nil {
+		t.Error("ComputeFor(disk) must error")
 	}
 }

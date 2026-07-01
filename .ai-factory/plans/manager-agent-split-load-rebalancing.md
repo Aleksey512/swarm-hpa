@@ -99,12 +99,13 @@ the docs task / completion.)
 <!-- Commit checkpoint: T1–T2 → Commit 1 -->
 
 ### Phase 1: Agent role
-- [ ] T3: Agent-side local collector adapter (`internal/adapter/agent/collector`) —
-  local node ID + capacity + per-task ContainerStats → `AgentReport`; share
-  `dockerstats/compute.go`. Tests. (depends on T2)
-- [ ] T4: Agent reporter + `runAgent` loop (`internal/adapter/agent/reporter`,
-  `cmd/swarm-hpa/agent.go`) — HTTP push with token/backoff, ticker loop, minimal
-  `/healthz`+`/metrics`. Tests. (depends on T3, T1, T2)
+- [x] T3: Agent-side local collector adapter (`internal/adapter/agent/collector`) —
+  local node ID + capacity + per-task ContainerStats → `AgentReport`; shared
+  compute extracted to `internal/adapter/statsutil`. Tests. (depends on T2)
+- [x] T4: Agent reporter + `runAgent` loop (`internal/adapter/agent/reporter`,
+  `internal/app/agentloop`, `cmd/swarm-hpa/agent.go`) — HTTP push with token/backoff,
+  testable collect→report loop (injectable tick source), minimal `/healthz`+`/metrics`
+  (`observability.AgentRecorder`). Tests + goleak + race. (depends on T3, T1, T2)
 <!-- Commit checkpoint: T3–T4 → Commit 2 -->
 
 ### Phase 2: Manager ingest + registry

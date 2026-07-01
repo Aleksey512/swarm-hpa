@@ -19,6 +19,11 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
+func approx(a, b float64) bool {
+	d := a - b
+	return d < 1e-9 && d > -1e-9
+}
+
 // fakeStatsAPI implements the unexported statsAPI for tests (no live daemon).
 type fakeStatsAPI struct {
 	tasks      []dswarm.Task
