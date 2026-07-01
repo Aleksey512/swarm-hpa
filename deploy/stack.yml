@@ -1,26 +1,33 @@
-# Swarm HPA — simple deployment (direct Docker socket).
+# Swarm HPA — manager + agent deployment (direct Docker socket).
 #
+#   INGEST_TOKEN=$(openssl rand -hex 16) \
 #   IMAGE=ghcr.io/aleksey512/swarm-hpa TAG=latest \
 #     docker stack deploy -c deploy/stack.yml swarm-hpa
 #
 # The image is also mirrored to Docker Hub — swap IMAGE to pull from there:
-#   IMAGE=docker.io/mrframe/swarm-hpa TAG=0.1.0 \
-#     docker stack deploy -c deploy/stack.yml swarm-hpa
+#   IMAGE=docker.io/mrframe/swarm-hpa TAG=latest ...
 #
-# The daemon MUST run on a manager node (the Swarm services/tasks/nodes APIs are
-# manager-only). Dry-run is ON by default — set DRY_RUN=false to enable real
-# scaling/healing. For a genuinely non-root, least-privilege setup, use
-# deploy/stack.proxy.yml instead (see the socket note below).
+# Two roles, one binary (selected by MODE):
+#   * swarm-hpa-manager — MODE=manager, pinned to a manager node (the Swarm
+#     services/tasks/nodes APIs are manager-only). Runs the reconcile loop
+#     (autoscale + heal + rebalance), receives agent reports on the ingest port,
+#     and serves /metrics.
+#   * swarm-hpa-agent   — MODE=agent, deployed `mode: global` (exactly ONE task
+#     per node). It samples the LOCAL node's per-task CPU/memory and pushes it to
+#     the manager. Global mode is what prevents two agents on one node; the
+#     manager additionally dedups by node ID.
+#
+# Dry-run is ON by default — set DRY_RUN=false on the MANAGER to enable real
+# scaling/healing/rebalancing. For a non-root, least-privilege manager, see
+# deploy/stack.proxy.yml (the agent still needs a local socket for stats).
 version: "3.8"
 
 services:
-  swarm-hpa:
+  swarm-hpa-manager:
     image: ${IMAGE:-ghcr.io/aleksey512/swarm-hpa}:${TAG:-latest}
 
-    # Runs as root (uid 0) ON PURPOSE: the bind-mounted /var/run/docker.sock is
-    # owned root:docker, and a non-root user cannot open it. Root is still tightly
-    # confined below (all capabilities dropped, no new privileges, read-only
-    # rootfs). Want non-root? Use deploy/stack.proxy.yml (talks TCP, no socket).
+    # Root (uid 0) ON PURPOSE to open the root-owned socket, but tightly confined
+    # (all caps dropped, no new privileges, read-only rootfs).
     user: "0:0"
     read_only: true
     cap_drop:
@@ -29,32 +36,39 @@ services:
       - no-new-privileges:true
 
     environment:
-      DRY_RUN: "true"            # safety default — log intended actions, apply none
+      MODE: "manager"
+      DRY_RUN: "true"             # safety default — log intended actions, apply none
       LOG_LEVEL: "info"
       LOG_FORMAT: "json"
       POLL_INTERVAL: "15s"
       METRICS_ADDR: ":9095"
-      METRICS_PROVIDER: "dockerstats"
-      # For Prometheus-backed metrics instead of Docker stats:
-      # METRICS_PROVIDER: "prometheus"
-      # PROMETHEUS_URL: "http://prometheus:9090"
+      INGEST_ADDR: ":9096"        # agent reports land here (overlay-only, unpublished)
+      # Shared secret agents authenticate with. Deploy fails if unset:
+      INGEST_TOKEN: "${INGEST_TOKEN:?set INGEST_TOKEN (e.g. openssl rand -hex 16)}"
+      # Aggregate the agent fleet for cluster-wide Docker-stats autoscaling:
+      METRICS_PROVIDER: "agents"
+      # Rebalancing (opt-in per service via swarm.autoscaler.rebalance=true):
+      REBALANCE_THRESHOLD: "0.30" # move when node CPU spread >= 30 points
+      REBALANCE_COOLDOWN: "10m"
 
     ports:
-      # The daemon's own /metrics (optional — you may prefer to scrape it over an
+      # The manager's own /metrics (optional — you may prefer to scrape it over an
       # internal overlay network rather than publishing it).
       - target: 9095
         published: 9095
         protocol: tcp
 
     volumes:
-      # NOTE: ":ro" on the socket does NOT restrict Docker API writes —
-      # ServiceUpdate (scale/heal) still works. It only makes the socket *file*
-      # read-only. For a real least-privilege API surface, use the socket proxy
-      # in deploy/stack.proxy.yml.
+      # ":ro" makes the socket FILE read-only; it does NOT restrict Docker API
+      # writes (ServiceUpdate still works). For a real least-privilege API
+      # surface on the manager, use deploy/stack.proxy.yml.
       - type: bind
         source: /var/run/docker.sock
         target: /var/run/docker.sock
         read_only: true
+
+    networks:
+      - hpa
 
     deploy:
       mode: replicated
@@ -72,3 +86,54 @@ services:
         reservations:
           cpus: "0.05"
           memory: 32M
+
+  swarm-hpa-agent:
+    image: ${IMAGE:-ghcr.io/aleksey512/swarm-hpa}:${TAG:-latest}
+
+    # Root to open the LOCAL socket (needed for ContainerStats + Info), confined
+    # the same way as the manager. The agent never mutates Swarm.
+    user: "0:0"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    environment:
+      MODE: "agent"
+      LOG_LEVEL: "info"
+      LOG_FORMAT: "json"
+      REPORT_INTERVAL: "15s"
+      METRICS_ADDR: ":9095"       # agent /metrics + /healthz (unpublished; scrape via overlay)
+      # Reach the manager's ingest endpoint over the overlay by service name:
+      MANAGER_URL: "http://swarm-hpa-manager:9096"
+      INGEST_TOKEN: "${INGEST_TOKEN:?set INGEST_TOKEN (e.g. openssl rand -hex 16)}"
+
+    volumes:
+      # The agent MUST read the local daemon's ContainerStats/Info — this is the
+      # whole point (the manager cannot read remote-node stats). A socket proxy
+      # does not expose ContainerStats, so the agent uses a direct local socket.
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        read_only: true
+
+    networks:
+      - hpa
+
+    deploy:
+      mode: global                # exactly one agent per node
+      restart_policy:
+        condition: any
+        delay: 5s
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
+        reservations:
+          cpus: "0.02"
+          memory: 16M
+
+networks:
+  hpa:
+    driver: overlay

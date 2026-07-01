@@ -45,6 +45,17 @@ Enable real mutations only when you are satisfied with the dry-run logs:
 The daemon is a single foreground process. It runs one reconcile loop on a fixed
 interval and stops gracefully on `SIGINT` / `SIGTERM`.
 
+### Manager or agent
+
+The same binary runs in one of two roles, chosen by `--mode` / `MODE` (default
+`manager`). The default **manager** role is everything above — the reconcile
+loop, autoscaling, and healing on a single node. To get **cluster-wide** stats
+autoscaling or load-aware rebalancing across a multi-node Swarm, you additionally
+run one **agent** per node (`--mode=agent`, deployed `mode: global`) that reports
+local load to the manager. Single-node users can ignore this. See
+[Agents & Rebalancing](agents-and-rebalancing.md) and [Deployment](deployment.md)
+for the fleet setup.
+
 ## Mark a service for management
 
 The daemon ignores every service that does not carry the opt-in label. Add the
@@ -87,3 +98,4 @@ scale` / `dry-run: would force-update (heal)` instead of being applied.
 
 - [Configuration](configuration.md) — daemon and per-service settings.
 - [Metrics Providers](metrics-providers.md) — how the scaling signal is measured.
+- [Agents & Rebalancing](agents-and-rebalancing.md) — the multi-node fleet and load-aware rebalancing.

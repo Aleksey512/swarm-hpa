@@ -44,6 +44,43 @@ func TestRecorderCountersAndGauge(t *testing.T) {
 	}
 }
 
+func TestRecorderRebalanceAndAgentMetrics(t *testing.T) {
+	r := NewRecorder("1.0.0", discardLogger())
+
+	r.RebalanceApplied("web")
+	r.AgentConnected("node-a")
+	r.AgentConnected("node-b")
+	r.AgentReportReceived("node-a")
+	r.AgentReportReceived("node-a")
+	r.AgentDuplicate("node-b")
+	r.NodeLoad("node-a", 42, 30)
+
+	if got := testutil.ToFloat64(r.rebalancesTotal.WithLabelValues("web")); got != 1 {
+		t.Errorf("rebalances_total{web} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(r.agentsConnected); got != 2 {
+		t.Errorf("agents_connected = %v, want 2", got)
+	}
+	if got := testutil.ToFloat64(r.agentReportsTotal.WithLabelValues("node-a")); got != 2 {
+		t.Errorf("agent_reports_total{node-a} = %v, want 2", got)
+	}
+	if got := testutil.ToFloat64(r.agentDuplicateTotal.WithLabelValues("node-b")); got != 1 {
+		t.Errorf("agent_duplicate_total{node-b} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(r.nodeCPUPct.WithLabelValues("node-a")); got != 42 {
+		t.Errorf("node_cpu_pct{node-a} = %v, want 42", got)
+	}
+
+	// Eviction drops the node gauges and decrements the connected count.
+	r.AgentDisconnected("node-a")
+	if got := testutil.ToFloat64(r.agentsConnected); got != 1 {
+		t.Errorf("agents_connected after evict = %v, want 1", got)
+	}
+	if n := testutil.CollectAndCount(r.nodeCPUPct); n != 0 {
+		t.Errorf("node_cpu_pct series after evict = %d, want 0 (gauge dropped)", n)
+	}
+}
+
 func TestRecorderHandlerExposition(t *testing.T) {
 	r := NewRecorder("9.9.9", discardLogger())
 	r.ReconcileTick()

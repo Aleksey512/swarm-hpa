@@ -20,12 +20,13 @@
   opt-in · dry-run by default · fully logged
 </p>
 
-A small Go daemon that adds two capabilities Swarm lacks out of the box: a
-Horizontal Pod Autoscaler analogue that scales opt-in services by a metric, and
-a healer that recovers tasks stuck in `pending` under a placement constraint
-after a node recovers ([moby/moby#42215](https://github.com/moby/moby/issues/42215)).
-It manages real production services, so every mutating action is opt-in (via
-labels), gated by dry-run + cooldown, and logged.
+A small Go daemon that adds capabilities Swarm lacks out of the box: a
+Horizontal Pod Autoscaler analogue that scales opt-in services by a metric, a
+healer that recovers tasks stuck in `pending` under a placement constraint
+after a node recovers ([moby/moby#42215](https://github.com/moby/moby/issues/42215)),
+and load-aware task rebalancing across nodes. It manages real production
+services, so every mutating action is opt-in (via labels), gated by dry-run +
+cooldown, and logged.
 
 ## Quick Start
 
@@ -58,28 +59,35 @@ docker service update \
 ## Key Features
 
 - **Horizontal autoscaling** of opt-in services between `min`/`max` by a target metric and threshold.
-- **Pluggable metrics**, chosen per service: **Docker stats** (CPU/memory, no deps) or **Prometheus** (arbitrary PromQL — RPS, p95 latency, queue depth).
-- **Stuck-task healer** — force-updates a service only when the precise stuck-pending signature holds and the constrained node has recovered. Opt in independently of autoscaling with `swarm.autoscaler.heal=true`, so a placement-pinned stateful singleton can be healed without being autoscaled.
-- **Opt-in via labels** — a service is touched only when it carries `swarm.autoscaler.*` labels (`enabled=true` for autoscaling, `heal=true` for healing).
+- **Pluggable metrics**, chosen per service: **Docker stats** (CPU/memory, no deps), **Prometheus** (arbitrary PromQL — RPS, p95 latency, queue depth), or **agents** (cluster-wide CPU/memory, no Prometheus).
+- **Manager / agent split** — one binary, two roles. The default **manager** runs the reconcile loop; optional per-node **agents** (`mode: global`) report local load so stats autoscaling works across the **whole cluster**, not just the manager's node.
+- **Stuck-task healer** — force-updates a service only when the precise stuck-pending signature holds and the constrained node has recovered. Opt in independently with `swarm.autoscaler.heal=true`.
+- **Load-aware rebalancing** — Swarm spreads tasks by count, not load; the manager detects node-CPU skew and can relieve a busy node. Opt in with `swarm.autoscaler.rebalance=true` (dry-run + long cooldown).
+- **Opt-in via labels** — a service is touched only when it carries `swarm.autoscaler.*` labels (`enabled=true` autoscale, `heal=true` heal, `rebalance=true` rebalance).
 - **Dry-run by default** — out of the box the daemon only logs intended actions.
 - **Safe mutations** — one guarded path enforces dry-run + per-service cooldown; replica changes are clamped to `min`/`max`.
 
 ## How it works
 
-A single reconcile loop runs every `--poll-interval`: **observe** the Swarm,
-**decide** in a pure core, then **act** through one guarded path (dry-run +
-opt-in labels + cooldown).
+The **manager** runs a single reconcile loop every `--poll-interval`: **observe**
+the Swarm, **decide** in a pure core, then **act** through one guarded path
+(dry-run + opt-in labels + cooldown). Optional per-node **agents** push local
+per-task CPU/memory to the manager, feeding cluster-wide autoscaling and the
+load-aware rebalance decision.
 
 ```mermaid
 flowchart LR
-  M["MetricsProvider<br/>Docker stats · Prometheus"]
-  subgraph loop["Reconcile loop · every --poll-interval"]
+  AG["Agents · mode: global<br/>per-node CPU/mem load"]
+  M["MetricsProvider<br/>Docker stats · Prometheus · Agents"]
+  subgraph loop["Manager reconcile loop · every --poll-interval"]
     direction LR
     O["Observe<br/>services · tasks · nodes · labels"] --> D["Decide<br/>pure core"] --> A["Act<br/>dry-run · opt-in · cooldown"]
   end
+  AG -->|POST /v1/report| M
   M -. metric .-> D
   A -->|scale| S["ServiceUpdate<br/>replicas → min..max"]
   A -->|heal| H["ForceUpdate<br/>unstick pending task"]
+  A -->|rebalance| R["ForceUpdate --force<br/>relieve busy node"]
 ```
 
 ## Example
@@ -107,7 +115,8 @@ docker service update \
 | [Getting Started](docs/getting-started.md) | Prerequisites, build, run, verify |
 | [Examples](examples/README.md) | Runnable demos: CPU + Prometheus autoscaling and the stuck-task healer |
 | [Configuration](docs/configuration.md) | Daemon flags/env and `swarm.autoscaler.*` service labels |
-| [Metrics Providers](docs/metrics-providers.md) | Docker stats vs Prometheus, per-service routing, PromQL |
+| [Metrics Providers](docs/metrics-providers.md) | Docker stats vs Prometheus vs agents, per-service routing, PromQL |
+| [Agents & Rebalancing](docs/agents-and-rebalancing.md) | Manager/agent split, cluster-wide metrics, load-aware rebalancing |
 | [Observability](docs/observability.md) | The daemon's own `/metrics` endpoint and metric catalog |
 | [Development](docs/development.md) | Build, test, the integration harness, and CI |
 | [Deployment](docs/deployment.md) | Container image, Swarm stack, least-privilege, upgrades |

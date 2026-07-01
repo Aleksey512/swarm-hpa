@@ -95,7 +95,8 @@ func run() int {
 func runManager(ctx context.Context, cfg config.Config, cli *client.Client, logger *slog.Logger) int {
 	swarmCtl := swarmadapter.New(cli, logger)
 	recorder := observability.NewRecorder(version, logger)
-	reg := registry.New(cfg.AgentStaleTimeout, port.SystemClock{}, nil, logger)
+	// recorder also satisfies registry.Recorder (agent-fleet metrics).
+	reg := registry.New(cfg.AgentStaleTimeout, port.SystemClock{}, recorder, logger)
 
 	metricsProvider, err := metrics.New(cfg, cli, reg, logger)
 	if err != nil {

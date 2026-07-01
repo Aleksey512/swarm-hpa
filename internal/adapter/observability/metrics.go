@@ -27,7 +27,15 @@ type Recorder struct {
 	rebalancesTotal *prometheus.CounterVec
 	suppressedTotal *prometheus.CounterVec
 	errorsTotal     *prometheus.CounterVec
-	logger          *slog.Logger
+
+	// Agent-fleet metrics (populated on the manager as agents report in).
+	agentsConnected     prometheus.Gauge
+	agentReportsTotal   *prometheus.CounterVec
+	agentDuplicateTotal *prometheus.CounterVec
+	nodeCPUPct          *prometheus.GaugeVec
+	nodeMemPct          *prometheus.GaugeVec
+
+	logger *slog.Logger
 }
 
 // compile-time proof the recorder satisfies the core port.
@@ -73,6 +81,26 @@ func NewRecorder(version string, logger *slog.Logger) *Recorder {
 			Namespace: metricNamespace, Name: "errors_total",
 			Help: "Recoverable errors, by pipeline stage.",
 		}, []string{"stage"}),
+		agentsConnected: f.NewGauge(prometheus.GaugeOpts{
+			Namespace: metricNamespace, Name: "agents_connected",
+			Help: "Live agents currently reporting to the manager.",
+		}),
+		agentReportsTotal: f.NewCounterVec(prometheus.CounterOpts{
+			Namespace: metricNamespace, Name: "agent_reports_total",
+			Help: "Agent reports ingested, by node.",
+		}, []string{"node"}),
+		agentDuplicateTotal: f.NewCounterVec(prometheus.CounterOpts{
+			Namespace: metricNamespace, Name: "agent_duplicate_total",
+			Help: "Duplicate/conflicting agent reports for a node from a distinct source, by node.",
+		}, []string{"node"}),
+		nodeCPUPct: f.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: metricNamespace, Name: "node_cpu_pct",
+			Help: "Latest reported node CPU utilization (0..100), by node.",
+		}, []string{"node"}),
+		nodeMemPct: f.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: metricNamespace, Name: "node_mem_pct",
+			Help: "Latest reported node memory utilization (0..100), by node.",
+		}, []string{"node"}),
 		logger: logger,
 	}
 
@@ -120,4 +148,33 @@ func (r *Recorder) ActionSuppressed(action, reason string) {
 // Error increments the recoverable-error counter for the given pipeline stage.
 func (r *Recorder) Error(stage string) {
 	r.errorsTotal.WithLabelValues(stage).Inc()
+}
+
+// --- agent-fleet events (satisfies app/registry.Recorder) ---
+
+// AgentConnected records a newly-seen agent joining the fleet.
+func (r *Recorder) AgentConnected(string) { r.agentsConnected.Inc() }
+
+// AgentDisconnected records an agent evicted as stale and drops its node gauges
+// so a dead node's load does not linger in the metrics.
+func (r *Recorder) AgentDisconnected(node string) {
+	r.agentsConnected.Dec()
+	r.nodeCPUPct.DeleteLabelValues(node)
+	r.nodeMemPct.DeleteLabelValues(node)
+}
+
+// AgentReportReceived records one ingested report for a node.
+func (r *Recorder) AgentReportReceived(node string) {
+	r.agentReportsTotal.WithLabelValues(node).Inc()
+}
+
+// AgentDuplicate records a duplicate/conflicting agent for a node.
+func (r *Recorder) AgentDuplicate(node string) {
+	r.agentDuplicateTotal.WithLabelValues(node).Inc()
+}
+
+// NodeLoad sets a node's latest reported CPU/memory utilization gauges.
+func (r *Recorder) NodeLoad(node string, cpuPct, memPct float64) {
+	r.nodeCPUPct.WithLabelValues(node).Set(cpuPct)
+	r.nodeMemPct.WithLabelValues(node).Set(memPct)
 }

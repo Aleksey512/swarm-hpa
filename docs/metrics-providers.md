@@ -1,16 +1,16 @@
-[← Configuration](configuration.md) · [Back to README](../README.md) · [Observability →](observability.md)
+[← Configuration](configuration.md) · [Back to README](../README.md) · [Agents & Rebalancing →](agents-and-rebalancing.md)
 
 # Metrics Providers
 
 The autoscaler scales a service from the **current value of its scaling metric**.
-That value comes from a `MetricsProvider`. Two are built in — `dockerstats` and
-`prometheus` — and each service chooses which one to use.
+That value comes from a `MetricsProvider`. Three are built in — `dockerstats`,
+`prometheus`, and `agents` — and each service chooses which one to use.
 
 ## Per-service routing
 
 A `Router` picks the provider for every service:
 
-1. the service's `swarm.autoscaler.source` label (`dockerstats` or `prometheus`), or
+1. the service's `swarm.autoscaler.source` label (`dockerstats`, `prometheus`, or `agents`), or
 2. the daemon's global `--metrics-provider` when the label is empty.
 
 So one daemon can scale some services from Docker stats and others from
@@ -27,7 +27,8 @@ skipped for the tick — never a wrong scale.
 - **Local-node only:** the stats API is served by the local daemon, so in a
   multi-node Swarm this provider sees only tasks on its node. When a service has
   no locally-readable stats, it reports *no data* and the service is skipped for
-  that tick (not an error).
+  that tick (not an error). For cluster-wide Docker-stats autoscaling, use the
+  [`agents`](#agents-provider-agents) provider instead.
 - No external dependencies — the baseline provider.
 
 ```bash
@@ -98,17 +99,56 @@ docker service update \
 > via its `source` label, while `--prometheus-url` makes the Prometheus path
 > available.
 
+## Agents provider (`agents`)
+
+The `agents` provider is the **cluster-wide** counterpart to `dockerstats`: it
+gives you Docker-stats-style CPU/memory autoscaling across **all** nodes with
+**no Prometheus** dependency.
+
+- **How it works.** A per-node [agent fleet](agents-and-rebalancing.md) samples
+  each node's LOCAL per-task CPU/memory and pushes it to the manager; this
+  provider **aggregates** those reports and averages a service's metric across
+  every task the agents have seen, cluster-wide.
+- **Manager mode only** — it reads the manager's agent registry, so it does
+  nothing without agents reporting in.
+- Selected by `swarm.autoscaler.metric=cpu` or `=memory` (same as `dockerstats`)
+  with `source=agents`, or globally via `METRICS_PROVIDER=agents`.
+- Reports *no data* (service skipped this tick, not an error) when no live agent
+  has metrics for the service yet.
+
+| | `dockerstats` | `agents` |
+|---|---|---|
+| Scope | tasks on the **manager's node** only | tasks on **every** node |
+| Dependency | none (local socket) | the agent fleet (`mode: global`) |
+| Remote-node tasks | silently skipped | included |
+
+```bash
+# Cluster-wide CPU autoscaling with the agent fleet as the global default:
+docker service update \
+  --label-add swarm.autoscaler.enabled=true \
+  --label-add swarm.autoscaler.min=2 --label-add swarm.autoscaler.max=10 \
+  --label-add swarm.autoscaler.metric=cpu --label-add swarm.autoscaler.target=70 \
+  web
+
+./bin/swarm-hpa --dry-run=false --metrics-provider=agents
+```
+
+See [Agents & Rebalancing](agents-and-rebalancing.md) for the fleet architecture,
+the ingest endpoint, and how to deploy agents.
+
 ## Troubleshooting
 
 | Symptom | Likely cause |
 |---------|--------------|
 | `requests source=prometheus but PROMETHEUS_URL is not configured` | A service set `source=prometheus` but the daemon has no `--prometheus-url`. |
 | `query returned N series; reduce it to a scalar or a single series` | The PromQL result has multiple series — aggregate it (e.g. `sum(...)`). |
-| Service never scales, logs show *no data* | Empty result / `NaN`, or (Docker stats) the task runs on another node. |
+| Service never scales, logs show *no data* | Empty result / `NaN`, or (Docker stats) the task runs on another node — switch to `agents` for cluster-wide stats. |
 | `uses source=prometheus but has no swarm.autoscaler.query` | Add the `swarm.autoscaler.query` label. |
+| `source=agents` service always *no data* | No agents are reporting yet — deploy the `swarm-hpa-agent` service (`mode: global`) and check `swarm_hpa_agents_connected`. |
 
 ## See Also
 
 - [Configuration](configuration.md) — the `source`/`query` labels and Prometheus flags.
+- [Agents & Rebalancing](agents-and-rebalancing.md) — the `agents` provider's fleet and ingest details.
 - [Getting Started](getting-started.md) — build and run the daemon.
 - [Examples](../examples/README.md) — a runnable Prometheus (PromQL) autoscaling demo.

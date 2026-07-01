@@ -20,6 +20,10 @@
 
 - [x] **Heal-only opt-in** — `swarm.autoscaler.heal` label decouples stuck-pending healing from autoscaling: heal-only (no autoscaler policy) for placement-pinned stateful singletons, `heal=false` to opt an autoscaled service out of healing; backward compatible
 
+## v0.3.0
+
+- [x] **Manager/Agent split + load-aware rebalancing** — `--mode manager|agent` splits the daemon into a manager (reconcile + report ingest + rebalancer) and per-node agents (`mode: global`) that push local per-task CPU/memory. The manager dedups agents by node ID, aggregates them into the `agents` metrics source for cluster-wide Docker-stats autoscaling, and adds opt-in load-aware task rebalancing (`swarm.autoscaler.rebalance`, dry-run by default). Backward compatible: default manager mode + dockerstats/prometheus unchanged; agents, `source=agents`, and rebalancing are additive and opt-in
+
 ## Completed
 
 | Milestone | Date |
@@ -36,3 +40,4 @@
 | Testing & resilience hardening | 2026-07-01 |
 | Packaging & deployment | 2026-07-01 |
 | Heal-only opt-in (v0.2.0) | 2026-07-01 |
+| Manager/Agent split + load-aware rebalancing (v0.3.0) | 2026-07-01 |

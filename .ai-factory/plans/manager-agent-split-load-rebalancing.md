@@ -136,13 +136,16 @@ the docs task / completion.)
 <!-- Commit checkpoint: T8–T9 → Commit 5 -->
 
 ### Phase 5: Observability, deploy, docs
-- [ ] T10: Observability — agent/node/rebalance metrics + `Recorder` extension
+- [x] T10: Observability — agent/node/rebalance metrics + `Recorder` extension
   (`internal/core/port/recorder.go`, `internal/adapter/observability`) —
   `agents_connected`, `agent_reports_total`, `agent_duplicate_total`, `node_cpu/mem_pct`,
-  `rebalances_total`. Tests. (depends on T5, T6, T9)
-- [ ] T11: Deploy (manager+agent stack) + mandatory docs checkpoint (`deploy/`, `README.md`,
-  `docs/`) — two-service `stack.yml` (manager + global agent), proxy notes, `/aif-docs`.
-  (depends on T4, T7, T9, T10)
+  `rebalances_total`; the observability recorder now also satisfies `registry.Recorder`
+  (wired in `runManager`), with gauge cleanup on eviction. Tests. (depends on T5, T6, T9)
+- [x] T11: Deploy (manager+agent stack) + mandatory docs checkpoint (`deploy/`, `README.md`,
+  `docs/`) — two-service `stack.yml` + `stack.proxy.yml` (manager + global agent) validated
+  with `docker stack config`; docs updated via `/aif-docs` (README + configuration/metrics-providers/
+  observability/deployment/getting-started + new `docs/agents-and-rebalancing.md` + AGENTS.md);
+  ROADMAP v0.3.0 milestone marked. (depends on T4, T7, T9, T10)
 <!-- Commit checkpoint: T10–T11 → Commit 6 -->
 
 ## Risks & Notes

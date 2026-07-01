@@ -25,14 +25,16 @@ type Recorder interface {
 	AgentDisconnected(node string)
 	AgentReportReceived(node string)
 	AgentDuplicate(node string)
+	NodeLoad(node string, cpuPct, memPct float64)
 }
 
 type nopRecorder struct{}
 
-func (nopRecorder) AgentConnected(string)      {}
-func (nopRecorder) AgentDisconnected(string)   {}
-func (nopRecorder) AgentReportReceived(string) {}
-func (nopRecorder) AgentDuplicate(string)      {}
+func (nopRecorder) AgentConnected(string)             {}
+func (nopRecorder) AgentDisconnected(string)          {}
+func (nopRecorder) AgentReportReceived(string)        {}
+func (nopRecorder) AgentDuplicate(string)             {}
+func (nopRecorder) NodeLoad(string, float64, float64) {}
 
 // entry wraps a report with the manager's receive time. LastSeen drives
 // staleness from the MANAGER's clock, not the agent's Timestamp, so clock skew
@@ -106,6 +108,7 @@ func (r *Registry) Ingest(report model.AgentReport, source string) error {
 		r.logger.Info("agent connected", "node", report.NodeID, "name", report.NodeName, "source", source)
 	}
 	r.recorder.AgentReportReceived(report.NodeID)
+	r.recorder.NodeLoad(report.NodeID, report.Node.CPUPercent, report.Node.MemPercent)
 	if duplicate {
 		r.recorder.AgentDuplicate(report.NodeID)
 		r.logger.Warn("duplicate agent for node from a distinct source (misconfigured non-global agent?)",

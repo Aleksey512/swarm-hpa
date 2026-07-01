@@ -1,27 +1,31 @@
-# Swarm HPA — hardened deployment (least-privilege via docker-socket-proxy).
+# Swarm HPA — hardened manager + agent deployment.
 #
+#   INGEST_TOKEN=$(openssl rand -hex 16) \
 #   IMAGE=ghcr.io/aleksey512/swarm-hpa TAG=latest \
 #     docker stack deploy -c deploy/stack.proxy.yml swarm-hpa
 #
-# The image is also mirrored to Docker Hub — swap IMAGE to pull from there:
-#   IMAGE=docker.io/mrframe/swarm-hpa TAG=0.1.0 \
-#     docker stack deploy -c deploy/stack.proxy.yml swarm-hpa
+# The MANAGER is genuinely non-root: it reaches the Swarm API only through
+# tecnativa/docker-socket-proxy, which whitelists exactly the endpoints it needs
+# (services/tasks/nodes + POST for ServiceUpdate). Only the proxy sits on a
+# manager node.
 #
-# tecnativa/docker-socket-proxy exposes ONLY the API surface swarm-hpa needs
-# (services/tasks/nodes + POST for ServiceUpdate) over TCP. The daemon then runs
-# as NON-root with no socket mount at all. Only the proxy must sit on a manager
-# node; swarm-hpa can run anywhere on the overlay network.
+# The AGENT cannot use the proxy: it must call ContainerStats/Info on the LOCAL
+# daemon (the manager cannot read remote-node stats — that is the reason agents
+# exist), and the socket proxy does not expose ContainerStats. So the agent uses
+# a direct, read-only local socket, tightly confined. This is a deliberate
+# tradeoff: the agent never mutates Swarm (no scale/heal/update), so its blast
+# radius is read-only stats collection.
 version: "3.8"
 
 services:
   docker-socket-proxy:
     image: tecnativa/docker-socket-proxy:0.2
     environment:
-      # Whitelist exactly what the daemon calls; everything else stays 403.
+      # Whitelist exactly what the MANAGER calls; everything else stays 403.
       SERVICES: "1"   # ServiceList / ServiceInspect / ServiceUpdate
       TASKS: "1"      # TaskList
       NODES: "1"      # NodeList
-      POST: "1"       # REQUIRED: ServiceUpdate (scale/heal) is an HTTP POST
+      POST: "1"       # REQUIRED: ServiceUpdate (scale/heal/rebalance) is an HTTP POST
     volumes:
       - type: bind
         source: /var/run/docker.sock
@@ -38,7 +42,7 @@ services:
       restart_policy:
         condition: any
 
-  swarm-hpa:
+  swarm-hpa-manager:
     image: ${IMAGE:-ghcr.io/aleksey512/swarm-hpa}:${TAG:-latest}
 
     # Genuinely non-root: it talks to the proxy over TCP, so there is no
@@ -51,13 +55,18 @@ services:
       - no-new-privileges:true
 
     environment:
+      MODE: "manager"
       DOCKER_HOST: "tcp://docker-socket-proxy:2375"
-      DRY_RUN: "true"            # safety default — log intended actions, apply none
+      DRY_RUN: "true"             # safety default — log intended actions, apply none
       LOG_LEVEL: "info"
       LOG_FORMAT: "json"
       POLL_INTERVAL: "15s"
       METRICS_ADDR: ":9095"
-      METRICS_PROVIDER: "dockerstats"
+      INGEST_ADDR: ":9096"
+      INGEST_TOKEN: "${INGEST_TOKEN:?set INGEST_TOKEN (e.g. openssl rand -hex 16)}"
+      METRICS_PROVIDER: "agents"
+      REBALANCE_THRESHOLD: "0.30"
+      REBALANCE_COOLDOWN: "10m"
 
     networks:
       - hpa
@@ -65,8 +74,8 @@ services:
     deploy:
       mode: replicated
       replicas: 1
-      # No manager constraint needed — the daemon reaches the proxy via the
-      # overlay network from any node. (The proxy carries the manager pin.)
+      # No manager constraint — the manager reaches the proxy via the overlay
+      # from any node. (The proxy carries the manager pin.)
       restart_policy:
         condition: any
         delay: 5s
@@ -77,6 +86,49 @@ services:
         reservations:
           cpus: "0.05"
           memory: 32M
+
+  swarm-hpa-agent:
+    image: ${IMAGE:-ghcr.io/aleksey512/swarm-hpa}:${TAG:-latest}
+
+    # Root to open the LOCAL socket for ContainerStats/Info, confined. Read-only
+    # role: the agent never mutates Swarm.
+    user: "0:0"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    environment:
+      MODE: "agent"
+      LOG_LEVEL: "info"
+      LOG_FORMAT: "json"
+      REPORT_INTERVAL: "15s"
+      METRICS_ADDR: ":9095"
+      MANAGER_URL: "http://swarm-hpa-manager:9096"
+      INGEST_TOKEN: "${INGEST_TOKEN:?set INGEST_TOKEN (e.g. openssl rand -hex 16)}"
+
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        read_only: true
+
+    networks:
+      - hpa
+
+    deploy:
+      mode: global                # exactly one agent per node
+      restart_policy:
+        condition: any
+        delay: 5s
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
+        reservations:
+          cpus: "0.02"
+          memory: 16M
 
 networks:
   hpa:

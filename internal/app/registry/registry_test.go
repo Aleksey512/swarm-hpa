@@ -39,10 +39,11 @@ type countingRecorder struct {
 	connected, disconnected, received, duplicates int
 }
 
-func (r *countingRecorder) AgentConnected(string)      { r.bump(&r.connected) }
-func (r *countingRecorder) AgentDisconnected(string)   { r.bump(&r.disconnected) }
-func (r *countingRecorder) AgentReportReceived(string) { r.bump(&r.received) }
-func (r *countingRecorder) AgentDuplicate(string)      { r.bump(&r.duplicates) }
+func (r *countingRecorder) AgentConnected(string)             { r.bump(&r.connected) }
+func (r *countingRecorder) AgentDisconnected(string)          { r.bump(&r.disconnected) }
+func (r *countingRecorder) AgentReportReceived(string)        { r.bump(&r.received) }
+func (r *countingRecorder) AgentDuplicate(string)             { r.bump(&r.duplicates) }
+func (r *countingRecorder) NodeLoad(string, float64, float64) {}
 
 func (r *countingRecorder) bump(p *int) {
 	r.mu.Lock()

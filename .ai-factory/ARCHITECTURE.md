@@ -33,24 +33,36 @@ skill). Module path is illustrative.
 .
 ├── cmd/
 │   └── swarm-hpa/
-│       └── main.go                # COMPOSITION ROOT: flags/env, wiring, signal handling, run loop
+│       ├── main.go                # COMPOSITION ROOT: flags/env, --mode dispatch (manager/agent), signals
+│       ├── agent.go               # runAgent: collector + reporter + report loop + agent /metrics
+│       └── app.go                 # runManager wiring: reconciler + /metrics + ingest server
 │
 ├── internal/
 │   ├── core/                      # ── DOMAIN (pure; stdlib-only, no Docker/Prometheus imports) ──
-│   │   ├── model/                 # Domain types: ServicePolicy, ScaleDecision, TaskView, NodeView
-│   │   ├── port/                  # Interfaces (ports): MetricsProvider, SwarmController, Clock
+│   │   ├── model/                 # Domain types: ServicePolicy, TaskView, NodeView, AgentReport/NodeLoad/TaskMetric
+│   │   ├── port/                  # Interfaces (ports): MetricsProvider, SwarmController, Clock, Recorder, ReportSink
 │   │   ├── autoscaler/            # Pure scaling decision logic (metric+policy → desired replicas)
-│   │   └── healer/                # Pure stuck-pending-task detection logic (TaskView → verdict)
+│   │   ├── healer/                # Pure stuck-pending-task detection logic (TaskView → verdict)
+│   │   ├── placement/             # Pure Swarm placement-constraint matching (shared by healer + rebalancer)
+│   │   └── rebalancer/            # Pure load-imbalance decision (node loads → recommended task move)
 │   │
 │   ├── app/                       # ── APPLICATION (use-case orchestration) ──
-│   │   └── reconciler/            # Reconcile loop; the SINGLE guarded mutation path (dry-run + cooldown)
+│   │   ├── reconciler/            # Reconcile loop; the SINGLE guarded mutation path (dry-run + cooldown)
+│   │   ├── agentloop/             # Agent-side collect-and-report loop (mirrors reconciler)
+│   │   └── registry/              # Agent-report store: dedup by node ID, stale eviction (implements ReportSink)
 │   │
 │   ├── adapter/                   # ── INFRASTRUCTURE (adapters implement core ports) ──
 │   │   ├── swarm/                 # Docker SDK adapter → implements port.SwarmController
+│   │   ├── statsutil/             # Shared Docker container-stats CPU/mem computations
+│   │   ├── agent/
+│   │   │   ├── collector/         # Agent: samples the LOCAL node → model.AgentReport
+│   │   │   └── reporter/          # Agent: HTTP push of reports to the manager
+│   │   ├── ingest/               # Manager: inbound POST /v1/report handler → ReportSink
 │   │   ├── metrics/
-│   │   │   ├── dockerstats/       # → implements port.MetricsProvider (Docker Engine stats)
-│   │   │   └── prometheus/        # → implements port.MetricsProvider (PromQL)
-│   │   └── observability/         # slog setup + prometheus client_golang /metrics
+│   │   │   ├── dockerstats/       # → implements port.MetricsProvider (local Docker Engine stats)
+│   │   │   ├── prometheus/        # → implements port.MetricsProvider (PromQL)
+│   │   │   └── distributed/       # → implements port.MetricsProvider (aggregates the agent fleet)
+│   │   └── observability/         # slog setup + prometheus client_golang /metrics (manager + agent recorders)
 │   │
 │   └── config/                    # Flag/env parsing + swarm.autoscaler.* label parsing → model
 │

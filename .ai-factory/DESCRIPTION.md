@@ -26,10 +26,21 @@ services explicitly marked for management are acted upon. Transparency beats
   `min`/`max` replica bounds, driven by a target metric and threshold.
 - **Pluggable metrics providers** behind a single `MetricsProvider` interface:
   - **Docker stats** — per-task CPU/memory from the Docker Engine API, no
-    external dependencies (baseline provider).
+    external dependencies (baseline provider; local-node only).
   - **Prometheus** — arbitrary PromQL signals (RPS, p95 latency, queue depth,
     custom app metrics), for HPA decisions closest to K8s custom/external
     metrics.
+  - **Agents** — per-node agents (deployed `mode: global`) push local per-task
+    CPU/memory to the manager, which aggregates them cluster-wide. This is the
+    self-contained (no-Prometheus) path to multi-node Docker-stats autoscaling.
+- **Manager/agent split (`--mode`).** One binary runs as a `manager` (reconcile
+  loop + report ingest + rebalancer, on a manager node) or an `agent` (per-node
+  load collector + reporter). Agents connect to the manager, which keys them by
+  node ID so a node is never double-counted.
+- **Load-aware task rebalancing** — Swarm spreads by task *count*, not load, so
+  one worker can sit idle while another is saturated. The manager detects the
+  skew from agent reports and (opt-in via `swarm.autoscaler.rebalance`, dry-run
+  by default) force-reschedules a service to relieve the busy node.
 - **Scale stabilization** — cooldown windows and step limits to prevent
   flapping (separate scale-up / scale-down cooldowns, analogous to K8s HPA
   stabilization windows).

@@ -88,7 +88,8 @@ source layout follows the Explicit Architecture (ports & adapters) in
 | Getting Started | docs/getting-started.md | Prerequisites, build, run, verify |
 | Examples | examples/README.md | Runnable autoscaling + healer demo stacks |
 | Configuration | docs/configuration.md | Daemon flags/env and service labels |
-| Metrics Providers | docs/metrics-providers.md | Docker stats vs Prometheus, routing, PromQL |
+| Metrics Providers | docs/metrics-providers.md | Docker stats vs Prometheus vs agents, routing, PromQL |
+| Agents & Rebalancing | docs/agents-and-rebalancing.md | Manager/agent split, cluster-wide metrics, load-aware rebalancing |
 | Observability | docs/observability.md | The daemon's own /metrics endpoint |
 | Development | docs/development.md | Build, test, integration harness, CI |
 | Deployment | docs/deployment.md | Container image, Swarm stack, hardening |
