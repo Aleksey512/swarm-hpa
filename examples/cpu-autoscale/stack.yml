@@ -1,0 +1,83 @@
+# Example: CPU autoscaling via the Docker stats provider (dockerstats)
+# =============================================================================
+# A demo target workload that swarm-hpa scales on average per-task CPU.
+#
+# The image is registry.k8s.io/hpa-example — the canonical Kubernetes HPA demo
+# app: every HTTP GET runs a CPU-bound busy loop, so driving traffic at it (see
+# ./loadgen.sh) pushes per-task CPU up and the daemon scales the service out.
+#
+# Deploy (a single-node lab is enough — `docker swarm init` first):
+#   docker stack deploy -c examples/cpu-autoscale/stack.yml demo
+#
+# Then run the daemon alongside the swarm. Dry-run is ON by default, so start by
+# WATCHING the decisions without touching anything:
+#   make run ARGS="--log-level=debug"
+# Generate load in another terminal:
+#   examples/cpu-autoscale/loadgen.sh
+# Expect the daemon to log lines like:
+#   level=INFO msg="observed managed services" count=1
+#   level=INFO msg="scaling decision" service=demo_web current=2 desired=4 value=... target=50
+#   level=INFO msg="dry-run: would scale" service=demo_web ...
+# Enable real scaling once the dry-run logs look right:
+#   make run ARGS="--dry-run=false"
+#
+# Tear down:
+#   docker stack rm demo
+# =============================================================================
+version: "3.8"
+
+services:
+  web:
+    image: registry.k8s.io/hpa-example
+    # Publish the app so loadgen.sh (and you) can reach it via the routing mesh.
+    ports:
+      - target: 80
+        published: 8080
+        protocol: tcp
+        mode: ingress
+
+    deploy:
+      mode: replicated
+      # Start at min; the daemon adjusts between min and max under load.
+      replicas: 2
+
+      # ---------------------------------------------------------------------
+      # OPT-IN POLICY — the swarm.autoscaler.* labels.
+      #
+      # CRITICAL: these live under `deploy.labels` (SERVICE labels), NOT under a
+      # top-level `labels:` key on the service (those are CONTAINER labels). The
+      # daemon reads the SERVICE spec labels — container labels are invisible to
+      # it, so a service labelled in the wrong place is silently never managed.
+      #
+      # A service is "managed" only when it carries enabled=true AND a VALID
+      # policy (min, max, metric, target). A misconfigured opt-in is logged and
+      # skipped — never fatal, never a wrong scale.
+      # ---------------------------------------------------------------------
+      labels:
+        swarm.autoscaler.enabled: "true"   # hard opt-in — unlabelled services are untouched
+        swarm.autoscaler.min: "2"          # never scale below this
+        swarm.autoscaler.max: "8"          # never scale above this
+        swarm.autoscaler.metric: "cpu"     # cpu | memory (Docker stats provider)
+        swarm.autoscaler.target: "50"      # target avg CPU %; lower => scales out sooner
+        # swarm.autoscaler.source omitted => uses the daemon's --metrics-provider
+        # (default: dockerstats). No source/query needed for the CPU demo.
+
+      # Small reservations/limits so per-task CPU% is meaningful and the demo
+      # cannot run away with the host.
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+        reservations:
+          cpus: "0.05"
+          memory: 32M
+
+      restart_policy:
+        condition: any
+        delay: 5s
+
+# NOTE: the Docker stats provider is LOCAL-NODE ONLY — it reads task stats from
+# the local Docker daemon. On a single-node swarm this sees every replica. On a
+# multi-node swarm, run the daemon where the tasks are (or use the Prometheus
+# example instead) — otherwise it reports "no data" for tasks on other nodes and
+# skips the service for that tick (not an error).
