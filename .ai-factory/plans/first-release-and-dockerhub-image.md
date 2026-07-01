@@ -84,7 +84,7 @@ the user runs the `gh secret set` / Docker Hub UI steps.
 <!-- Commit checkpoint: tasks 4-5 → Commit 2 -->
 
 ### Phase 4: Release cut
-- [ ] Task 6: Cut `v0.1.0` (depends on 1, 2, 3, 4, 5) — **outward-facing; confirm with
+- [x] Task 6: Cut `v0.1.0` (depends on 1, 2, 3, 4, 5) — **outward-facing; confirm with
   the user before pushing the tag.** Pre-flight (secrets set, changes on `main`, CI
   green, no existing `v0.1.0`), then `git tag -a v0.1.0` + `git push origin v0.1.0`,
   watch the release workflow, and verify `:0.1.0` / `:0.1` / `:latest` on both
