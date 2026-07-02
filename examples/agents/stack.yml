@@ -132,7 +132,7 @@ services:
 
   # ── target workload: the canonical HPA demo app (CPU-bound per request) ──────
   web:
-    image: registry.k8s.io/hpa-example
+    image: nginx:alpine
     ports:
       - target: 80
         published: 8080
@@ -153,7 +153,7 @@ services:
         swarm.autoscaler.min: "2"
         swarm.autoscaler.max: "8"
         swarm.autoscaler.metric: "cpu"
-        swarm.autoscaler.target: "20"       # below the ~50% per-task ceiling (cpus: 0.50) so it visibly scales out
+        swarm.autoscaler.target: "5"       # below the ~50% per-task ceiling (cpus: 0.50) so it visibly scales out
         swarm.autoscaler.source: "agents"   # aggregate this service's tasks across ALL nodes via the fleet
         swarm.autoscaler.rebalance: "true"  # also eligible for load-aware rebalancing (opt-in)
 
