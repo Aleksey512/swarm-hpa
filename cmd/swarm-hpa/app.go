@@ -22,6 +22,7 @@ type appDeps struct {
 	clock          port.Clock
 	recorder       port.Recorder
 	metricsHandler http.Handler          // served at /metrics (recorder.Handler() on the real path)
+	stackAPI       http.Handler          // GitOps status API + UI (GET /stacks, GET /); nil when gitops is off
 	loads          reconciler.LoadSource // agent registry; nil disables rebalancing
 	logger         *slog.Logger
 	reconcilerOpts []reconciler.Option // e.g. reconciler.WithTickSource for deterministic tests
@@ -72,6 +73,13 @@ func buildApp(cfg config.Config, deps appDeps) (*app, error) {
 
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", deps.metricsHandler)
+	// GitOps status surface — only registered when gitops is enabled (nil stackAPI
+	// otherwise). GET /stacks (JSON) and GET / | /ui (HTML) ride on the metrics
+	// listener; they never shadow /metrics or /stacks (more specific patterns).
+	if deps.stackAPI != nil {
+		mux.Handle("/stacks", deps.stackAPI)
+		mux.Handle("/", deps.stackAPI)
+	}
 	metricsSrv := &http.Server{Addr: cfg.MetricsAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 
 	return &app{

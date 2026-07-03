@@ -19,8 +19,10 @@ import (
 	"github.com/Aleksey512/swarm-hpa/internal/adapter/metrics"
 	"github.com/Aleksey512/swarm-hpa/internal/adapter/observability"
 	"github.com/Aleksey512/swarm-hpa/internal/adapter/sops"
+	"github.com/Aleksey512/swarm-hpa/internal/adapter/stackapi"
 	"github.com/Aleksey512/swarm-hpa/internal/adapter/stackdeploy"
 	"github.com/Aleksey512/swarm-hpa/internal/adapter/stackrender"
+	"github.com/Aleksey512/swarm-hpa/internal/adapter/statusstore"
 	swarmadapter "github.com/Aleksey512/swarm-hpa/internal/adapter/swarm"
 	"github.com/Aleksey512/swarm-hpa/internal/app/gitopsync"
 	"github.com/Aleksey512/swarm-hpa/internal/app/registry"
@@ -109,12 +111,24 @@ func runManager(ctx context.Context, cfg config.Config, cli *client.Client, logg
 		return 1
 	}
 
+	// GitOps status surface (per-stack status API + drift UI) rides on the metrics
+	// server alongside /metrics. Built only when gitops is enabled; a nil stackAPI
+	// leaves the metrics mux with just /metrics. The same statusStore is fed to the
+	// gitops loop below (the writer) and the stackapi handler (the reader).
+	var statusStore port.StackStatusStore
+	var stackAPI http.Handler
+	if cfg.GitOpsEnabled {
+		statusStore = statusstore.New(logger)
+		stackAPI = stackapi.New(statusStore, swarmCtl, logger)
+	}
+
 	application, err := buildApp(cfg, appDeps{
 		swarm:          swarmCtl,
 		metrics:        metricsProvider,
 		clock:          port.SystemClock{},
 		recorder:       recorder,
 		metricsHandler: recorder.Handler(),
+		stackAPI:       stackAPI,
 		loads:          reg,
 		logger:         logger,
 	})
@@ -156,7 +170,7 @@ func runManager(ctx context.Context, cfg config.Config, cli *client.Client, logg
 			stackrender.New(logger),
 			deployer,
 			sops.New(logger),
-			recorder, nil, stacks,
+			recorder, statusStore, stacks,
 			cfg.GitOpsPullPolicy, cfg.DryRun, cfg.GitOpsAutoRotate, cfg.GitOpsConcurrency, logger,
 		)
 		sopsStacks := 0
@@ -169,7 +183,8 @@ func runManager(ctx context.Context, cfg config.Config, cli *client.Client, logg
 			"stacks", len(stacks), "interval", cfg.GitOpsInterval,
 			"repos_path", cfg.GitOpsReposPath, "pull_policy", cfg.GitOpsPullPolicy,
 			"dry_run", cfg.DryRun, "auto_rotate", cfg.GitOpsAutoRotate,
-			"concurrency", cfg.GitOpsConcurrency, "sops_stacks", sopsStacks)
+			"concurrency", cfg.GitOpsConcurrency, "sops_stacks", sopsStacks,
+			"status_api", cfg.MetricsAddr+"{/stacks JSON, / UI}")
 		go func() {
 			if err := gitLoop.Run(ctx, cfg.GitOpsInterval); err != nil {
 				logger.Error("gitops loop failed", "err", err)
