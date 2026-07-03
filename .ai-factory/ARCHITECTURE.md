@@ -40,7 +40,8 @@ skill). Module path is illustrative.
 ├── internal/
 │   ├── core/                      # ── DOMAIN (pure; stdlib-only, no Docker/Prometheus imports) ──
 │   │   ├── model/                 # Domain types: ServicePolicy, TaskView, NodeView, AgentReport/NodeLoad/TaskMetric
-│   │   ├── port/                  # Interfaces (ports): MetricsProvider, SwarmController, StackStateReader, Clock, Recorder, ReportSink, GitSource, StackRenderer, StackDeployer
+│   │   ├── port/                  # Interfaces (ports): MetricsProvider, SwarmController, StackStateReader, Clock, Recorder, ReportSink, GitSource, StackRenderer, StackDeployer, SecretDecrypter
+│   │   ├── compose/               # Pure compose-map transforms: secret discovery + config/secret rotation (no I/O; shared by app + deploy adapter)
 │   │   ├── autoscaler/            # Pure scaling decision logic (metric+policy → desired replicas)
 │   │   ├── healer/                # Pure stuck-pending-task detection logic (TaskView → verdict)
 │   │   ├── placement/             # Pure Swarm placement-constraint matching (shared by healer + rebalancer)
@@ -50,7 +51,7 @@ skill). Module path is illustrative.
 │   │   ├── reconciler/            # Reconcile loop; the SINGLE guarded mutation path (dry-run + cooldown)
 │   │   ├── agentloop/             # Agent-side collect-and-report loop (mirrors reconciler)
 │   │   ├── registry/              # Agent-report store: dedup by node ID, stale eviction (implements ReportSink)
-│   │   └── gitopsync/             # GitOps stack-sync loop: git→render→(dry-run gate)→deploy; autoscaler-aware (carry-forward)
+│   │   └── gitopsync/             # GitOps stack-sync loop: git→render→decrypt→rotate→(dry-run gate)→deploy; autoscaler-aware (carry-forward)
 │   │
 │   ├── adapter/                   # ── INFRASTRUCTURE (adapters implement core ports) ──
 │   │   ├── swarm/                 # Docker SDK adapter → implements port.SwarmController
@@ -66,6 +67,7 @@ skill). Module path is illustrative.
 │   │   ├── git/                   # → implements port.GitSource (go-git clone/pull, HTTP basic auth, per-repo lock, revision)
 │   │   ├── stackrender/           # → implements port.StackRenderer (text/template{Values} + goccy/go-yaml)
 │   │   ├── stackdeploy/           # → implements port.StackDeployer (carry-forward + `docker stack deploy` via docker/cli)
+│   │   ├── sops/                  # → implements port.SecretDecrypter (in-place sops decrypt: age/gpg backends via env)
 │   │   └── observability/         # slog setup + prometheus client_golang /metrics (manager + agent recorders)
 │   │
 │   └── config/                    # Flag/env parsing + swarm.autoscaler.* label parsing → model
@@ -125,6 +127,9 @@ dependency rule is broken.
    its own dry-run gate and records through the shared `Recorder` — it does not
    route through the reconciler `Guard`. Carry-forward keeps it from clobbering
    autoscaled replicas, so it needs neither the cooldown nor the per-service gate.
+   The loop's pipeline is render → sops-decrypt (in place) → rotate configs/secrets
+   by content hash → carry-forward → deploy; decrypt is skipped in dry-run because
+   it writes plaintext to disk.
 
 ## Code Examples
 

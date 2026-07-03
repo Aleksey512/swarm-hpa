@@ -44,9 +44,9 @@
   `cmd/swarm-hpa/main.go` (--gitops block): `sops.New(logger)` + pass `autoRotate` into `gitopsync.New`; startup INFO log (sops stacks count, auto_rotate). Finalize `New` signature + update tests. Verify build+`-race`.
 
 ### Phase 2 — Hardening & docs
-- [ ] **M3-T6 — Integration test + goleak** *(blocked by: T5)*
+- [x] **M3-T6 — Integration test + goleak** *(done; full decrypt→rotate→carry-forward E2E via fake-sops+real-git+capture-deploy; autoRotate-off variant; also fixed 2 existing integration tests on the new New signature; goleak green)*
   `integration_test.go`: seed repo with a file-backed secret that is age-encrypted; assert decrypt→rotate→carry-forward produces a `<stack>-<name>-<hash>` rename whose hash = md5(plaintext)[:8], carry-forward still preserves autoscaled replicas, and `autoRotate=false` skips rename. goleak (TestMain) green. Fixture under `internal/adapter/sops/testdata/` if needed.
-- [ ] **M3-T7 — Docs checkpoint (mandatory) via `/aif-docs`** *(blocked by: T6)*
+- [x] **M3-T7 — Docs checkpoint (mandatory) via `/aif-docs`** *(done; docs/gitops.md Secrets+Rotation sections + tables + diagram + migration; README, DESCRIPTION, ARCHITECTURE, AGENTS updated)*
   `docs/gitops.md` += "Secrets (SOPS)" + "Config/secret rotation" subsections + updated config tables + migration sketch; README one-liner; DESCRIPTION tech-stack (sops/v3) + feature; ARCHITECTURE tree (`adapter/sops/`, `SecretDecrypter`, extended pipeline in principle 7); AGENTS.md structure map.
 
 ## Commit Plan

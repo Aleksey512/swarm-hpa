@@ -39,13 +39,14 @@ source layout follows the Explicit Architecture (ports & adapters) in
 │   │   └── healer/          # stuck-task detection logic (placeholder)
 │   ├── app/
 │   │   ├── reconciler/      # reconcile loop + Guard (the single dry-run + cooldown mutation chokepoint)
-│   │   └── gitopsync/       # GitOps stack-sync loop: git→render→(dry-run gate)→deploy (autoscaler-aware)
+│   │   └── gitopsync/       # GitOps stack-sync loop: git→render→decrypt→rotate→(dry-run gate)→deploy (autoscaler-aware)
 │   ├── adapter/
 │   │   ├── swarm/           # Docker SDK adapter: read-only list/inspect services, tasks, nodes
 │   │   ├── metrics/         # provider factory + dockerstats (cpu/mem); prometheus → milestone 7
 │   │   ├── git/             # GitOps: go-git clone/pull/auth/revision (implements port.GitSource)
 │   │   ├── stackrender/     # GitOps: text/template{Values} + goccy/go-yaml (implements port.StackRenderer)
 │   │   ├── stackdeploy/     # GitOps: carry-forward + `docker stack deploy` (implements port.StackDeployer)
+│   │   ├── sops/            # GitOps: in-place sops decrypt (implements port.SecretDecrypter)
 │   │   └── observability/   # slog logging setup (live); /metrics endpoint (future)
 │   └── config/              # flag/env config + swarm.autoscaler.* label parsing
 ├── Makefile                 # build/run/test/test-race/test-integration/lint/fmt/cover + docker-build/run/push

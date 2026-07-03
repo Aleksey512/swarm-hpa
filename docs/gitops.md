@@ -55,6 +55,8 @@ The manager now pulls `my-app` on `main`, renders `compose.yaml`, and deploys th
 | `branch` | no | Branch to track (default `main`). |
 | `compose_file` | yes | Path to the compose file inside the repo. |
 | `values_file` | no | Optional; the compose file is rendered as a Go `text/template` with `{{.Values.*}}` from this file. |
+| `sops_files` | no | sops-encrypted files (repo-relative) to decrypt before deploy. Ignored when `sops_secrets_discovery` is true. |
+| `sops_secrets_discovery` | no | When true, auto-discover sops files from the compose's file-backed `secrets:` (and ignore `sops_files`). |
 
 Both files are read from the `--gitops-configs-path` directory (default `.`).
 
@@ -67,6 +69,7 @@ Both files are read from the `--gitops-configs-path` directory (default `.`).
 | `--gitops-repos-path` | `GITOPS_REPOS_PATH` | `repos` | Root under which each repo is cloned (`<path>/<repo>`). |
 | `--gitops-interval` | `GITOPS_INTERVAL` | `120s` | Stack-sync loop period. |
 | `--gitops-pull-policy` | `GITOPS_PULL_POLICY` | `always` | `--resolve-image` mode for `docker stack deploy`: `always` or `changed`. |
+| `--gitops-auto-rotate` | `GITOPS_AUTO_ROTATE` | `true` | Rename file-backed configs/secrets to `<stack>-<name>-<hash>` so Swarm picks up changed content (swarm-cd `auto_rotate`). |
 
 The loop honors the global `--dry-run` / `DRY_RUN` flag (on by default).
 
@@ -90,6 +93,8 @@ HPA scales web 3 → 7
    │
 swarm-hpa GitOps tick
    ├─ git pull → render compose
+   ├─ decrypt sops secrets (in place)
+   ├─ rotate configs/secrets → <stack>-<name>-<hash>
    ├─ carry-forward: web.deploy.replicas = clamp(live 7, min, max) = 7
    └─ docker stack deploy  →  web replicas stays 7  (NOT reset to 3)
 ```
@@ -99,6 +104,42 @@ two-controller fight. The carry-forward logic is isolated in
 `internal/adapter/stackdeploy/carryforward.go` so a future native granular deploy
 could drop it.
 
+## Secrets (SOPS)
+
+Secrets (and any other files) can be [sops](https://github.com/getsops/sops)-encrypted
+in the repo and decrypted in place before deploy. List the encrypted files per
+stack, or auto-discover them from the compose `secrets:`:
+
+```yaml
+# stacks.yaml
+web:
+  repo: my-app
+  branch: main
+  compose_file: compose.yaml
+  sops_files:
+    - secrets/tls.crt
+    - secrets/tls.key
+  # OR: sops_secrets_discovery: true   # decrypt every file-backed secret
+```
+
+The age / gpg backend is chosen by the **sops library** from env, exactly like
+swarm-cd: `SOPS_AGE_KEY_FILE` (age), or `SOPS_GPG_PRIVATE_KEY_FILE` /
+`SOPS_GPG_PRIVATE_KEY` (gpg). swarm-hpa does not parse these itself.
+
+> **Security:** decrypt is in-place — it overwrites the encrypted file with
+> plaintext in the repo worktree under `--gitops-repos-path` (an ephemeral clone).
+> Keep `--gitops-repos-path` on ephemeral storage. Decrypted contents are never
+> logged. Decrypt is **skipped in dry-run** (it is a disk side effect).
+
+## Config/secret rotation
+
+Swarm configs and secrets are immutable, so a changed file is not picked up unless
+its object name changes. With `--gitops-auto-rotate` (on by default, swarm-cd
+`auto_rotate` parity), every file-backed `configs:` / `secrets:` object is renamed
+to `<stack>-<name>-<content-hash>` (md5 of the decrypted content, first 8 hex)
+before deploy — so editing a config/secret in Git and syncing mints a new object
+and Swarm rolls it out. Disable with `--gitops-auto-rotate=false`.
+
 ## Migrating from swarm-cd
 
 1. Stop swarm-cd (its work is now done by swarm-hpa's manager).
@@ -107,17 +148,16 @@ could drop it.
    ./bin/swarm-hpa --gitops --gitops-configs-path=/path/to/your/swarm-cd-configs --dry-run=false
    ```
    `repos.yaml` and `stacks.yaml` are read as-is.
-3. Re-create any swarm-cd-only features you relied on — **SOPS secret decryption,
-   config/secret rotation, the web UI, and the status API are not in the v0.4.0
-   foundation slice**; they land in later releases. Until then, decrypt secrets
-   and rotate configs out of band (or keep them unencrypted in the repo).
+3. SOPS secret decryption and config/secret rotation are supported — set
+   `SOPS_AGE_KEY_FILE` / `SOPS_GPG_*` and `sops_files` / `sops_secrets_discovery`
+   exactly as you did for swarm-cd. Still pending in later v0.4.0 releases: the
+   web UI, status API, concurrency tuning, and drift detection.
 4. Start in dry-run, confirm the logged deploy intents and preserved replica
    counts, then disable dry-run.
 
-> The foundation slice (v0.4.0) covers git sync, compose rendering, the
-> autoscaler-aware deploy, config loading, and the loop. SOPS/rotation,
-> concurrency, the status/UI, drift detection, and the full migration guide are
-> follow-ups.
+> v0.4.0 so far covers git sync, compose rendering, the autoscaler-aware deploy,
+> SOPS secret decryption, config/secret rotation, config loading, and the loop.
+> Concurrency tuning, the status/UI, and drift detection are follow-ups.
 
 ## Dry run
 

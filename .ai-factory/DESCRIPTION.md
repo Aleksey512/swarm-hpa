@@ -52,8 +52,9 @@ services explicitly marked for management are acted upon. Transparency beats
   deploy never clobbers a replica count the autoscaler just set: replicas of
   `swarm.autoscaler.enabled` services are carried forward from live state
   (clamped to `[min,max]`) before `docker stack deploy`. Drop-in `repos.yaml` /
-  `stacks.yaml` compatibility; dry-run-aware; fully logged. Opt-in, off by
-  default.
+  `stacks.yaml` compatibility; dry-run-aware; fully logged. SOPS secret decryption
+  (age/gpg) and config/secret rotation by content hash reach full swarm-cd parity.
+  Opt-in, off by default.
 - **Scale stabilization** — cooldown windows and step limits to prevent
   flapping (separate scale-up / scale-down cooldowns, analogous to K8s HPA
   stabilization windows).
@@ -77,7 +78,9 @@ services explicitly marked for management are acted upon. Transparency beats
   basic auth), `github.com/goccy/go-yaml` (compose/values parsing + template
   rendering), and `github.com/docker/cli` v28 (the `docker stack deploy` cobra
   command, for swarm-cd parity); behind `GitSource` / `StackRenderer` /
-  `StackDeployer` ports so the sync loop stays testable without a live daemon
+  `StackDeployer` / `SecretDecrypter` ports so the sync loop stays testable without
+  a live daemon; `github.com/getsops/sops/v3` decrypts sops-encrypted secrets in
+  place (age/gpg backends via env)
 - **Metrics in (HPA signals):** Docker Engine stats API + Prometheus HTTP API
   (PromQL via the official `prometheus/client_golang` `api/prometheus/v1`
   client), behind a `MetricsProvider` interface
