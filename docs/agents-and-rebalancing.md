@@ -1,4 +1,4 @@
-[← Metrics Providers](metrics-providers.md) · [Back to README](../README.md) · [Observability →](observability.md)
+[← Metrics Providers](metrics-providers.md) · [Back to README](../README.md) · [GitOps →](gitops.md)
 
 # Agents & Rebalancing
 

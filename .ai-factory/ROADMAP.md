@@ -1,6 +1,6 @@
 # Project Roadmap
 
-> A Go daemon for Docker Swarm that adds horizontal autoscaling (HPA) for opt-in services and auto-heals tasks stuck in `pending` under placement constraints after node recovery — opt-in, dry-run by default, fully logged.
+> A Go daemon for Docker Swarm that adds horizontal autoscaling (HPA) for opt-in services, auto-heals tasks stuck in `pending` under placement constraints after node recovery, and declaratively syncs stacks from Git (autoscaler-aware GitOps) — opt-in, dry-run by default, fully logged.
 
 ## Milestones
 
@@ -23,6 +23,16 @@
 ## v0.3.0
 
 - [x] **Manager/Agent split + load-aware rebalancing** — `--mode manager|agent` splits the daemon into a manager (reconcile + report ingest + rebalancer) and per-node agents (`mode: global`) that push local per-task CPU/memory. The manager dedups agents by node ID, aggregates them into the `agents` metrics source for cluster-wide Docker-stats autoscaling, and adds opt-in load-aware task rebalancing (`swarm.autoscaler.rebalance`, dry-run by default). Backward compatible: default manager mode + dockerstats/prometheus unchanged; agents, `source=agents`, and rebalancing are additive and opt-in
+
+## v0.4.0
+
+- [ ] **GitOps source & git sync** — declarative `repos` (url + password / `password_file` auth) and `stacks` (repo, branch, compose file) config; per-stack branch clone + pull with a per-repo lock; `DOCKER_HOST` / remote-socket (docker-socket-proxy) support. *(parity: repos.yaml / stacks.yaml, git sync)*
+- [ ] **Stack rendering pipeline** — read + parse compose, Go `text/template` rendering against a `values_file` (`Values`), producing the deployable stack map. *(parity: compose templating)*
+- [ ] **SOPS secrets + config/secret rotation** — age + gpg decryption (env-mounted keys), per-stack `sops_files`, automatic secret discovery from compose `secrets:` (global + per-stack, with plugin/external-secret exclusion), and `auto_rotate` config/secret rotation by content hash (`<stack>-<name>-<hash>` rename) so Swarm picks up changed content. *(parity: sops, discovery, rotation)*
+- [ ] **Autoscaler-aware stack deploy** — deploy via `docker stack deploy --with-registry-auth` with a configurable image pull policy (`always` / `changed`, global + per-stack). **The differentiator:** because the same project owns both sync and scale, it never overwrites `replicas` of any `swarm.autoscaler.*` service — the swarm-cd↔HPA conflict dissolves by construction (no carry-forward hack, no two-controller fight). Dry-run-aware and logged. *(parity: deploy, image pull policy + the HPA-aware win)*
+- [ ] **Concurrent scheduler & loop integration** — worker-pool concurrency (per-repo locking) and a configurable `update_interval`, integrated alongside the existing autoscale/heal reconcile loop and its single guarded mutation path. *(parity: concurrency, interval)*
+- [ ] **Status, drift, web UI & API** — per-stack revision / last-error status, drift detection (live vs desired), `/metrics` for sync actions, and a `GET /stacks` JSON + static UI surface mirroring swarm-cd. *(parity: status API/UI + drift addition)*
+- [ ] **swarm-cd migration & docs** — config mapping / compatibility with `repos.yaml` + `stacks.yaml`, cut-over guide from m-adawi/swarm-cd, deploy example, and docs so the move is documented and reversible.
 
 ## Completed
 

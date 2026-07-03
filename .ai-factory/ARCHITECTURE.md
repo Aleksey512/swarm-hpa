@@ -40,7 +40,7 @@ skill). Module path is illustrative.
 ├── internal/
 │   ├── core/                      # ── DOMAIN (pure; stdlib-only, no Docker/Prometheus imports) ──
 │   │   ├── model/                 # Domain types: ServicePolicy, TaskView, NodeView, AgentReport/NodeLoad/TaskMetric
-│   │   ├── port/                  # Interfaces (ports): MetricsProvider, SwarmController, Clock, Recorder, ReportSink
+│   │   ├── port/                  # Interfaces (ports): MetricsProvider, SwarmController, StackStateReader, Clock, Recorder, ReportSink, GitSource, StackRenderer, StackDeployer
 │   │   ├── autoscaler/            # Pure scaling decision logic (metric+policy → desired replicas)
 │   │   ├── healer/                # Pure stuck-pending-task detection logic (TaskView → verdict)
 │   │   ├── placement/             # Pure Swarm placement-constraint matching (shared by healer + rebalancer)
@@ -49,7 +49,8 @@ skill). Module path is illustrative.
 │   ├── app/                       # ── APPLICATION (use-case orchestration) ──
 │   │   ├── reconciler/            # Reconcile loop; the SINGLE guarded mutation path (dry-run + cooldown)
 │   │   ├── agentloop/             # Agent-side collect-and-report loop (mirrors reconciler)
-│   │   └── registry/              # Agent-report store: dedup by node ID, stale eviction (implements ReportSink)
+│   │   ├── registry/              # Agent-report store: dedup by node ID, stale eviction (implements ReportSink)
+│   │   └── gitopsync/             # GitOps stack-sync loop: git→render→(dry-run gate)→deploy; autoscaler-aware (carry-forward)
 │   │
 │   ├── adapter/                   # ── INFRASTRUCTURE (adapters implement core ports) ──
 │   │   ├── swarm/                 # Docker SDK adapter → implements port.SwarmController
@@ -62,6 +63,9 @@ skill). Module path is illustrative.
 │   │   │   ├── dockerstats/       # → implements port.MetricsProvider (local Docker Engine stats)
 │   │   │   ├── prometheus/        # → implements port.MetricsProvider (PromQL)
 │   │   │   └── distributed/       # → implements port.MetricsProvider (aggregates the agent fleet)
+│   │   ├── git/                   # → implements port.GitSource (go-git clone/pull, HTTP basic auth, per-repo lock, revision)
+│   │   ├── stackrender/           # → implements port.StackRenderer (text/template{Values} + goccy/go-yaml)
+│   │   ├── stackdeploy/           # → implements port.StackDeployer (carry-forward + `docker stack deploy` via docker/cli)
 │   │   └── observability/         # slog setup + prometheus client_golang /metrics (manager + agent recorders)
 │   │
 │   └── config/                    # Flag/env parsing + swarm.autoscaler.* label parsing → model
@@ -115,6 +119,12 @@ dependency rule is broken.
    return concrete structs. (See `golang-design-patterns`.)
 6. **Composition root only in `cmd`.** All concrete-type wiring happens in `main.go`;
    no package reaches out to construct its own dependencies.
+7. **GitOps deploy is a separate, dry-run-gated mutation channel.** A
+   `docker stack deploy` is a bulk mutation that does not fit the per-service
+   cooldown model, so the optional GitOps loop (`--gitops`, `app/gitopsync`) applies
+   its own dry-run gate and records through the shared `Recorder` — it does not
+   route through the reconciler `Guard`. Carry-forward keeps it from clobbering
+   autoscaled replicas, so it needs neither the cooldown nor the per-service gate.
 
 ## Code Examples
 

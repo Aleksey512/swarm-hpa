@@ -63,6 +63,7 @@ docker service update \
 - **Manager / agent split** — one binary, two roles. The default **manager** runs the reconcile loop; optional per-node **agents** (`mode: global`) report local load so stats autoscaling works across the **whole cluster**, not just the manager's node.
 - **Stuck-task healer** — force-updates a service only when the precise stuck-pending signature holds and the constrained node has recovered. Opt in independently with `swarm.autoscaler.heal=true`.
 - **Load-aware rebalancing** — Swarm spreads tasks by count, not load; the manager detects node-CPU skew and can relieve a busy node. Opt in with `swarm.autoscaler.rebalance=true` (dry-run + long cooldown).
+- **GitOps stack sync** — optionally deploy stacks from Git directly from the manager (`--gitops`), replacing a third-party swarm-cd. Because the same process also autoscales, a deploy never clobbers a replica count the autoscaler set. Drop-in `repos.yaml`/`stacks.yaml` compatibility; dry-run-aware.
 - **Opt-in via labels** — a service is touched only when it carries `swarm.autoscaler.*` labels (`enabled=true` autoscale, `heal=true` heal, `rebalance=true` rebalance).
 - **Dry-run by default** — out of the box the daemon only logs intended actions.
 - **Safe mutations** — one guarded path enforces dry-run + per-service cooldown; replica changes are clamped to `min`/`max`.
@@ -106,6 +107,21 @@ docker service update \
   --metrics-provider=prometheus --prometheus-url=http://prometheus:9090
 ```
 
+## GitOps stack sync (autoscaler-aware)
+
+Optionally deploy stacks from Git directly from the manager (`--gitops`), replacing
+a third-party swarm-cd. Because the same process also autoscales, a deploy never
+clobbers a replica count the autoscaler set — replicas of `swarm.autoscaler.enabled`
+services are carried forward (clamped to `[min,max]`) before `docker stack deploy`.
+Drop-in `repos.yaml` / `stacks.yaml` compatibility; dry-run-aware.
+
+```bash
+./bin/swarm-hpa --gitops --gitops-configs-path=/etc/swarm-hpa
+```
+
+See [GitOps stack sync](docs/gitops.md) for the config reference, the
+swarm-cd↔HPA conflict it solves, and a swarm-cd migration sketch.
+
 ---
 
 ## Documentation
@@ -117,6 +133,7 @@ docker service update \
 | [Configuration](docs/configuration.md) | Daemon flags/env and `swarm.autoscaler.*` service labels |
 | [Metrics Providers](docs/metrics-providers.md) | Docker stats vs Prometheus vs agents, per-service routing, PromQL |
 | [Agents & Rebalancing](docs/agents-and-rebalancing.md) | Manager/agent split, cluster-wide metrics, load-aware rebalancing |
+| [GitOps stack sync](docs/gitops.md) | In-cluster Git-driven deploys that never clobber autoscaled replicas |
 | [Observability](docs/observability.md) | The daemon's own `/metrics` endpoint and metric catalog |
 | [Development](docs/development.md) | Build, test, the integration harness, and CI |
 | [Deployment](docs/deployment.md) | Container image, Swarm stack, least-privilege, upgrades |

@@ -1,4 +1,4 @@
-[← Agents & Rebalancing](agents-and-rebalancing.md) · [Back to README](../README.md) · [Development →](development.md)
+[← GitOps](gitops.md) · [Back to README](../README.md) · [Development →](development.md)
 
 # Observability (`/metrics`)
 

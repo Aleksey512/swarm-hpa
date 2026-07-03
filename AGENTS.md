@@ -38,10 +38,14 @@ source layout follows the Explicit Architecture (ports & adapters) in
 │   │   ├── autoscaler/      # scaling decision: metric+policy → desired replicas (clamp, tolerance)
 │   │   └── healer/          # stuck-task detection logic (placeholder)
 │   ├── app/
-│   │   └── reconciler/      # reconcile loop + Guard (the single dry-run + cooldown mutation chokepoint)
+│   │   ├── reconciler/      # reconcile loop + Guard (the single dry-run + cooldown mutation chokepoint)
+│   │   └── gitopsync/       # GitOps stack-sync loop: git→render→(dry-run gate)→deploy (autoscaler-aware)
 │   ├── adapter/
 │   │   ├── swarm/           # Docker SDK adapter: read-only list/inspect services, tasks, nodes
 │   │   ├── metrics/         # provider factory + dockerstats (cpu/mem); prometheus → milestone 7
+│   │   ├── git/             # GitOps: go-git clone/pull/auth/revision (implements port.GitSource)
+│   │   ├── stackrender/     # GitOps: text/template{Values} + goccy/go-yaml (implements port.StackRenderer)
+│   │   ├── stackdeploy/     # GitOps: carry-forward + `docker stack deploy` (implements port.StackDeployer)
 │   │   └── observability/   # slog logging setup (live); /metrics endpoint (future)
 │   └── config/              # flag/env config + swarm.autoscaler.* label parsing
 ├── Makefile                 # build/run/test/test-race/test-integration/lint/fmt/cover + docker-build/run/push
@@ -90,6 +94,7 @@ source layout follows the Explicit Architecture (ports & adapters) in
 | Configuration | docs/configuration.md | Daemon flags/env and service labels |
 | Metrics Providers | docs/metrics-providers.md | Docker stats vs Prometheus vs agents, routing, PromQL |
 | Agents & Rebalancing | docs/agents-and-rebalancing.md | Manager/agent split, cluster-wide metrics, load-aware rebalancing |
+| GitOps stack sync | docs/gitops.md | In-cluster Git-driven deploys that never clobber autoscaled replicas |
 | Observability | docs/observability.md | The daemon's own /metrics endpoint |
 | Development | docs/development.md | Build, test, integration harness, CI |
 | Deployment | docs/deployment.md | Container image, Swarm stack, hardening |

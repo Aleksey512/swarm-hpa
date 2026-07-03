@@ -2,7 +2,7 @@
 
 ## Overview
 
-A Go daemon for Docker Swarm that adds two capabilities Swarm lacks out of the
+A Go daemon for Docker Swarm that adds three capabilities Swarm lacks out of the
 box:
 
 1. **Service autoscaling (HPA).** Automatically adjusts the replica count of
@@ -14,6 +14,11 @@ box:
    node becomes active again. Today this is fixed only manually via
    `docker service update <service> --force`. The daemon detects such tasks and
    recovers them on its own.
+3. **GitOps stack sync.** Deploys stacks from Git into Swarm from within the
+   daemon (replacing a third-party swarm-cd). Because the same process also
+   autoscales, a deploy never overwrites a replica count the autoscaler just set —
+   replicas of autoscaled services are carried forward (clamped to `[min,max]`)
+   before `docker stack deploy`. Opt-in via `--gitops`; dry-run-aware; logged.
 
 The daemon manages real production services, so every mutating action must be
 **predictable, opt-in, and logged**. By default nothing is touched: only
@@ -41,6 +46,14 @@ services explicitly marked for management are acted upon. Transparency beats
   one worker can sit idle while another is saturated. The manager detects the
   skew from agent reports and (opt-in via `swarm.autoscaler.rebalance`, dry-run
   by default) force-reschedules a service to relieve the busy node.
+- **GitOps stack sync (autoscaler-aware, `--gitops`)** — folds in-cluster,
+  Git-driven stack deployment into the manager (replacing a third-party swarm-cd
+  dependency). Because the same process owns both the sync and the autoscaler, a
+  deploy never clobbers a replica count the autoscaler just set: replicas of
+  `swarm.autoscaler.enabled` services are carried forward from live state
+  (clamped to `[min,max]`) before `docker stack deploy`. Drop-in `repos.yaml` /
+  `stacks.yaml` compatibility; dry-run-aware; fully logged. Opt-in, off by
+  default.
 - **Scale stabilization** — cooldown windows and step limits to prevent
   flapping (separate scale-up / scale-down cooldowns, analogous to K8s HPA
   stabilization windows).
@@ -60,6 +73,11 @@ services explicitly marked for management are acted upon. Transparency beats
 - **Framework:** None (standard library oriented); CLI via stdlib `flag` + env
   vars
 - **Docker access:** Official Docker Go SDK (`github.com/docker/docker/client`, pinned `v28.5.2+incompatible`; option types in `api/types/swarm`)
+- **GitOps stack sync:** `github.com/go-git/go-git/v5` (repo clone/pull + HTTP
+  basic auth), `github.com/goccy/go-yaml` (compose/values parsing + template
+  rendering), and `github.com/docker/cli` v28 (the `docker stack deploy` cobra
+  command, for swarm-cd parity); behind `GitSource` / `StackRenderer` /
+  `StackDeployer` ports so the sync loop stays testable without a live daemon
 - **Metrics in (HPA signals):** Docker Engine stats API + Prometheus HTTP API
   (PromQL via the official `prometheus/client_golang` `api/prometheus/v1`
   client), behind a `MetricsProvider` interface
