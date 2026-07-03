@@ -21,6 +21,13 @@ type StackConfig struct {
 	Branch      string
 	ComposeFile string
 	ValuesFile  string // optional; "" disables template rendering
+	// SopsFiles are repo-relative paths of sops-encrypted files to decrypt before
+	// deploy (swarm-cd sops_files). Ignored when SopsSecretsDiscovery is true.
+	SopsFiles []string
+	// SopsSecretsDiscovery, when true, auto-discovers sops files from the
+	// compose's file-backed secrets (swarm-cd sops_secrets_discovery) and ignores
+	// SopsFiles.
+	SopsSecretsDiscovery bool
 }
 
 // StackService is the live, read-only projection of one Swarm service that belongs

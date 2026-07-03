@@ -48,3 +48,13 @@ type DeployOpts struct {
 type StackDeployer interface {
 	Deploy(ctx context.Context, name string, compose map[string]any, opts DeployOpts) error
 }
+
+// SecretDecrypter decrypts sops-encrypted files IN PLACE (overwrites the file at
+// <worktree>/<file> with plaintext). Implemented by adapter/sops over the sops
+// library, which selects the age/gpg backend from env (SOPS_AGE_KEY_FILE,
+// SOPS_GPG_PRIVATE_KEY_FILE, SOPS_GPG_PRIVATE_KEY). Decrypt is a disk side
+// effect that writes plaintext to the worktree — callers MUST skip it in dry-run
+// and MUST NOT log decrypted contents.
+type SecretDecrypter interface {
+	Decrypt(ctx context.Context, worktree string, files []string) error
+}

@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -35,6 +37,53 @@ func TestLoadArgsDefaults(t *testing.T) {
 	}
 	if c.Cooldown != 3*time.Minute {
 		t.Errorf("Cooldown = %s, want 3m", c.Cooldown)
+	}
+	if !c.GitOpsAutoRotate {
+		t.Error("GitOpsAutoRotate must default to true (swarm-cd auto_rotate parity)")
+	}
+}
+
+func TestLoadArgsGitOpsAutoRotate(t *testing.T) {
+	// env overrides default
+	c, err := LoadArgs(nil, fakeEnv(map[string]string{"GITOPS_AUTO_ROTATE": "false"}))
+	if err != nil || c.GitOpsAutoRotate {
+		t.Fatalf("env auto_rotate=false: err=%v auto=%v", err, c.GitOpsAutoRotate)
+	}
+	// flag overrides env
+	c, err = LoadArgs([]string{"--gitops-auto-rotate=true"}, fakeEnv(map[string]string{"GITOPS_AUTO_ROTATE": "false"}))
+	if err != nil || !c.GitOpsAutoRotate {
+		t.Fatalf("flag auto_rotate=true: err=%v auto=%v", err, c.GitOpsAutoRotate)
+	}
+	// invalid env
+	if _, err := LoadArgs(nil, fakeEnv(map[string]string{"GITOPS_AUTO_ROTATE": "maybe"})); err == nil {
+		t.Fatal("invalid GITOPS_AUTO_ROTATE should error")
+	}
+}
+
+func TestLoadGitOpsSopsFields(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "repos.yaml"), []byte("myrepo:\n  url: https://example.com/repo.git\n"), 0o600); err != nil {
+		t.Fatalf("write repos.yaml: %v", err)
+	}
+	stacksYAML := "web:\n  repo: myrepo\n  branch: main\n  compose_file: compose.yaml\n" +
+		"  sops_files:\n    - secrets/tls.crt\n  sops_secrets_discovery: true\n"
+	if err := os.WriteFile(filepath.Join(dir, "stacks.yaml"), []byte(stacksYAML), 0o600); err != nil {
+		t.Fatalf("write stacks.yaml: %v", err)
+	}
+
+	_, stacks, err := LoadGitOps(dir)
+	if err != nil {
+		t.Fatalf("LoadGitOps: %v", err)
+	}
+	if len(stacks) != 1 {
+		t.Fatalf("got %d stacks, want 1", len(stacks))
+	}
+	s := stacks[0]
+	if len(s.SopsFiles) != 1 || s.SopsFiles[0] != "secrets/tls.crt" {
+		t.Errorf("SopsFiles = %v, want [secrets/tls.crt]", s.SopsFiles)
+	}
+	if !s.SopsSecretsDiscovery {
+		t.Errorf("SopsSecretsDiscovery = false, want true")
 	}
 }
 

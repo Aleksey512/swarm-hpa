@@ -116,6 +116,10 @@ type Config struct {
 	// GitOpsPullPolicy is the --resolve-image mode passed to `docker stack
 	// deploy`: "always" (re-resolve every sync) or "changed".
 	GitOpsPullPolicy string
+	// GitOpsAutoRotate, when true (the default), renames file-backed configs and
+	// secrets to <stack>-<name>-<content-hash> before deploy so Swarm picks up
+	// changed content (swarm-cd auto_rotate). Applies globally to all stacks.
+	GitOpsAutoRotate bool
 
 	// --- Agent-only settings (ignored in manager mode) ---
 
@@ -154,6 +158,7 @@ func Default() Config {
 		GitOpsReposPath:   "repos",
 		GitOpsInterval:    120 * time.Second,
 		GitOpsPullPolicy:  "always",
+		GitOpsAutoRotate:  true,
 
 		ReportInterval: 15 * time.Second,
 	}
@@ -298,6 +303,7 @@ func (c Config) LogValue() slog.Value {
 		slog.String("gitops_repos_path", c.GitOpsReposPath),
 		slog.Duration("gitops_interval", c.GitOpsInterval),
 		slog.String("gitops_pull_policy", c.GitOpsPullPolicy),
+		slog.Bool("gitops_auto_rotate", c.GitOpsAutoRotate),
 	)
 }
 
@@ -475,6 +481,13 @@ func LoadArgs(args []string, lookupEnv func(string) (string, bool)) (Config, err
 	if v, ok := lookupEnv("GITOPS_PULL_POLICY"); ok {
 		c.GitOpsPullPolicy = v
 	}
+	if v, ok := lookupEnv("GITOPS_AUTO_ROTATE"); ok {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("env GITOPS_AUTO_ROTATE=%q: %w", v, err)
+		}
+		c.GitOpsAutoRotate = b
+	}
 
 	fs := flag.NewFlagSet("swarm-hpa", flag.ContinueOnError)
 	fs.SetOutput(io.Discard) // errors are returned, not printed
@@ -505,6 +518,7 @@ func LoadArgs(args []string, lookupEnv func(string) (string, bool)) (Config, err
 	gitopsReposPath := fs.String("gitops-repos-path", c.GitOpsReposPath, "manager: root directory under which each repo is cloned")
 	gitopsInterval := fs.Duration("gitops-interval", c.GitOpsInterval, "manager: stack-sync loop interval")
 	gitopsPullPolicy := fs.String("gitops-pull-policy", c.GitOpsPullPolicy, "manager: image resolution mode for `docker stack deploy`: always|changed")
+	gitopsAutoRotate := fs.Bool("gitops-auto-rotate", c.GitOpsAutoRotate, "manager: rename file-backed configs/secrets to <stack>-<name>-<hash> so Swarm picks up changed content (swarm-cd auto_rotate)")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, fmt.Errorf("parse flags: %w", err)
@@ -537,6 +551,7 @@ func LoadArgs(args []string, lookupEnv func(string) (string, bool)) (Config, err
 	c.GitOpsReposPath = *gitopsReposPath
 	c.GitOpsInterval = *gitopsInterval
 	c.GitOpsPullPolicy = *gitopsPullPolicy
+	c.GitOpsAutoRotate = *gitopsAutoRotate
 
 	if err := c.Validate(); err != nil {
 		return Config{}, fmt.Errorf("invalid configuration: %w", err)

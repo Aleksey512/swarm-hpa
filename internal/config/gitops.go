@@ -35,10 +35,12 @@ type fileRepo struct {
 
 // fileStack mirrors one entry of swarm-cd's stacks.yaml.
 type fileStack struct {
-	Repo        string `yaml:"repo"`
-	Branch      string `yaml:"branch"`
-	ComposeFile string `yaml:"compose_file"`
-	ValuesFile  string `yaml:"values_file"`
+	Repo                 string   `yaml:"repo"`
+	Branch               string   `yaml:"branch"`
+	ComposeFile          string   `yaml:"compose_file"`
+	ValuesFile           string   `yaml:"values_file"`
+	SopsFiles            []string `yaml:"sops_files"`
+	SopsSecretsDiscovery bool     `yaml:"sops_secrets_discovery"`
 }
 
 func loadReposFile(path string) (map[string]model.RepoConfig, error) {
@@ -91,11 +93,13 @@ func loadStacksFile(configsPath string, repos map[string]model.RepoConfig) ([]mo
 			branch = "main"
 		}
 		stacks = append(stacks, model.StackConfig{
-			Name:        name,
-			Repo:        s.Repo,
-			Branch:      branch,
-			ComposeFile: s.ComposeFile,
-			ValuesFile:  s.ValuesFile,
+			Name:                 name,
+			Repo:                 s.Repo,
+			Branch:               branch,
+			ComposeFile:          s.ComposeFile,
+			ValuesFile:           s.ValuesFile,
+			SopsFiles:            s.SopsFiles,
+			SopsSecretsDiscovery: s.SopsSecretsDiscovery,
 		})
 	}
 	return stacks, nil
