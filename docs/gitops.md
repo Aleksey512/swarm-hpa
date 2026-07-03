@@ -197,22 +197,15 @@ A failed Swarm read for one stack degrades just that stack's `drift` to a
 
 ## Migrating from swarm-cd
 
-1. Stop swarm-cd (its work is now done by swarm-hpa's manager).
-2. Point swarm-hpa at your existing config:
-   ```bash
-   ./bin/swarm-hpa --gitops --gitops-configs-path=/path/to/your/swarm-cd-configs --dry-run=false
-   ```
-   `repos.yaml` and `stacks.yaml` are read as-is.
-3. SOPS secret decryption and config/secret rotation are supported — set
-   `SOPS_AGE_KEY_FILE` / `SOPS_GPG_*` and `sops_files` / `sops_secrets_discovery`
-   exactly as you did for swarm-cd. The stack status API, drift detection, and
-   read-only UI are available on the metrics endpoint (`GET /stacks`, `GET /`).
-4. Start in dry-run, confirm the logged deploy intents and preserved replica
-   counts, then disable dry-run.
+swarm-hpa is a drop-in replacement for [swarm-cd](https://github.com/m-adawi/swarm-cd):
+your existing `repos.yaml` / `stacks.yaml` are read as-is. See the dedicated
+[swarm-cd migration guide](migrating-from-swarm-cd.md) for the feature-parity
+matrix, the config field mapping, a step-by-step cut-over, and rollback.
 
-> v0.4.0 so far covers git sync, compose rendering, the autoscaler-aware deploy,
-> SOPS secret decryption, config/secret rotation, config loading, the loop,
-> bounded worker-pool concurrency, and the per-stack status API + drift UI.
+> v0.4.0 covers git sync, compose rendering, the autoscaler-aware deploy, SOPS
+> secret decryption, config/secret rotation, config loading, the loop, bounded
+> worker-pool concurrency, the per-stack status API + drift UI, and the swarm-cd
+> migration guide.
 
 ## Dry run
 

@@ -120,7 +120,7 @@ Drop-in `repos.yaml` / `stacks.yaml` compatibility; dry-run-aware.
 ```
 
 See [GitOps stack sync](docs/gitops.md) for the config reference, the
-swarm-cd↔HPA conflict it solves, and a swarm-cd migration sketch.
+swarm-cd↔HPA conflict it solves, and the [swarm-cd migration guide](docs/migrating-from-swarm-cd.md).
 
 ---
 
@@ -134,6 +134,7 @@ swarm-cd↔HPA conflict it solves, and a swarm-cd migration sketch.
 | [Metrics Providers](docs/metrics-providers.md) | Docker stats vs Prometheus vs agents, per-service routing, PromQL |
 | [Agents & Rebalancing](docs/agents-and-rebalancing.md) | Manager/agent split, cluster-wide metrics, load-aware rebalancing |
 | [GitOps stack sync](docs/gitops.md) | In-cluster Git-driven deploys that never clobber autoscaled replicas |
+| [Migrating from swarm-cd](docs/migrating-from-swarm-cd.md) | Step-by-step cut-over from `m-adawi/swarm-cd` (drop-in config compat) |
 | [Observability](docs/observability.md) | The daemon's own `/metrics` endpoint and metric catalog |
 | [Development](docs/development.md) | Build, test, the integration harness, and CI |
 | [Deployment](docs/deployment.md) | Container image, Swarm stack, least-privilege, upgrades |

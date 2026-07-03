@@ -120,6 +120,77 @@ func TestLoadGitOpsSopsFields(t *testing.T) {
 	}
 }
 
+// TestLoadGitOps_SwarmCDCompat proves the drop-in compatibility claim: a
+// swarm-cd-style repos.yaml + stacks.yaml parses into swarm-hpa's config with the
+// documented field mapping. If a future refactor breaks swarm-cd compat, this test
+// fails. See docs/migrating-from-swarm-cd.md.
+func TestLoadGitOps_SwarmCDCompat(t *testing.T) {
+	dir := t.TempDir()
+
+	// swarm-cd private-repo auth via password_file (the file's first line is the token).
+	if err := os.WriteFile(filepath.Join(dir, "deploy-token"), []byte("g1t-t0k3n\n"), 0o600); err != nil {
+		t.Fatalf("write deploy-token: %v", err)
+	}
+	reposYAML := "myapp:\n" +
+		"  url: https://github.com/org/myapp.git\n" +
+		"  username: ci\n" +
+		"  password_file: deploy-token\n"
+	if err := os.WriteFile(filepath.Join(dir, "repos.yaml"), []byte(reposYAML), 0o600); err != nil {
+		t.Fatalf("write repos.yaml: %v", err)
+	}
+	stacksYAML := "web:\n" +
+		"  repo: myapp\n" +
+		"  branch: main\n" +
+		"  compose_file: compose.yaml\n" +
+		"  values_file: values.yaml\n" +
+		"  sops_files:\n    - secrets/db.yaml\n" +
+		"  sops_secrets_discovery: true\n"
+	if err := os.WriteFile(filepath.Join(dir, "stacks.yaml"), []byte(stacksYAML), 0o600); err != nil {
+		t.Fatalf("write stacks.yaml: %v", err)
+	}
+
+	repos, stacks, err := LoadGitOps(dir)
+	if err != nil {
+		t.Fatalf("LoadGitOps: %v", err)
+	}
+	if len(repos) != 1 || len(stacks) != 1 {
+		t.Fatalf("got %d repos / %d stacks, want 1/1", len(repos), len(stacks))
+	}
+
+	r := repos["myapp"]
+	if r.URL != "https://github.com/org/myapp.git" || r.Username != "ci" || r.PasswordFile != "deploy-token" {
+		t.Errorf("repo field mapping mismatch: %+v", r)
+	}
+
+	s := stacks[0]
+	if s.Name != "web" || s.Repo != "myapp" || s.Branch != "main" ||
+		s.ComposeFile != "compose.yaml" || s.ValuesFile != "values.yaml" {
+		t.Errorf("stack core field mapping mismatch: %+v", s)
+	}
+	if len(s.SopsFiles) != 1 || s.SopsFiles[0] != "secrets/db.yaml" {
+		t.Errorf("SopsFiles = %v, want [secrets/db.yaml]", s.SopsFiles)
+	}
+	if !s.SopsSecretsDiscovery {
+		t.Error("SopsSecretsDiscovery = false, want true")
+	}
+
+	// Public-repo case (no auth fields) parses with empty credentials.
+	pub := t.TempDir()
+	if err := os.WriteFile(filepath.Join(pub, "repos.yaml"), []byte("public:\n  url: https://example.com/pub.git\n"), 0o600); err != nil {
+		t.Fatalf("write public repos.yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(pub, "stacks.yaml"), []byte("web:\n  repo: public\n  branch: main\n  compose_file: compose.yaml\n"), 0o600); err != nil {
+		t.Fatalf("write public stacks.yaml: %v", err)
+	}
+	pubRepos, _, err := LoadGitOps(pub)
+	if err != nil {
+		t.Fatalf("public LoadGitOps: %v", err)
+	}
+	if pr := pubRepos["public"]; pr.Username != "" || pr.Password != "" || pr.PasswordFile != "" {
+		t.Errorf("public repo must have empty auth fields: %+v", pr)
+	}
+}
+
 func TestLoadArgsCooldown(t *testing.T) {
 	// env over default
 	c, err := LoadArgs(nil, fakeEnv(map[string]string{"COOLDOWN": "45s"}))
