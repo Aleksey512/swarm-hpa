@@ -157,6 +157,44 @@ to reproduce fully-sequential sync (handy for debugging). A fault on one stack �
 a panic, a deploy error — never cancels the others; each stack is isolated and
 the loop continues.
 
+## Status, drift & UI
+
+The manager exposes a read-only view of stack health on the metrics listener
+(`--metrics-addr`, default `:9095`) — there is no extra flag; it is only present
+when `--gitops` is enabled.
+
+- **`GET /stacks`** — JSON, one entry per stack:
+  ```json
+  {
+    "stacks": [{
+      "name": "web", "revision": "abc12345", "ok": true,
+      "last_sync": "2026-07-03T15:00:00Z", "deploy_count": 5,
+      "desired_replicas": {"worker": 2},
+      "drift": [{"service": "worker", "desired": 2, "live": 3, "drifted": true}],
+      "drifted": true
+    }]
+  }
+  ```
+  `ok` is `false` with `error_stage`/`error_message` when the last sync failed
+  (git, render, secrets, rotate, or deploy). `desired_replicas` is the
+  non-autoscaled, non-global replica snapshot taken at the last render.
+- **`GET /`** (or **`GET /ui`**) — a read-only HTML table of the same data
+  (refresh to update; no client-side JavaScript).
+
+### Drift
+
+`drift` compares each stack's live Swarm replicas against `desired_replicas`,
+**computed on demand per request** so it is always fresh:
+
+- An **autoscaled** service (`swarm.autoscaler.enabled=true`) is never reported as
+  drift — the HPA intentionally changes its replicas and carry-forward preserves
+  them.
+- A **global** service has no replica count to compare.
+- A desired service **missing from live** (not deployed yet) counts as drift.
+
+A failed Swarm read for one stack degrades just that stack's `drift` to a
+`drift_error` note — it never turns the whole response into a 5xx.
+
 ## Migrating from swarm-cd
 
 1. Stop swarm-cd (its work is now done by swarm-hpa's manager).
@@ -167,15 +205,14 @@ the loop continues.
    `repos.yaml` and `stacks.yaml` are read as-is.
 3. SOPS secret decryption and config/secret rotation are supported — set
    `SOPS_AGE_KEY_FILE` / `SOPS_GPG_*` and `sops_files` / `sops_secrets_discovery`
-   exactly as you did for swarm-cd. Still pending in later v0.4.0 releases: the
-   web UI, status API, and drift detection.
+   exactly as you did for swarm-cd. The stack status API, drift detection, and
+   read-only UI are available on the metrics endpoint (`GET /stacks`, `GET /`).
 4. Start in dry-run, confirm the logged deploy intents and preserved replica
    counts, then disable dry-run.
 
 > v0.4.0 so far covers git sync, compose rendering, the autoscaler-aware deploy,
-> SOPS secret decryption, config/secret rotation, config loading, the loop, and
-> bounded worker-pool concurrency. The status/UI and drift detection are
-> follow-ups.
+> SOPS secret decryption, config/secret rotation, config loading, the loop,
+> bounded worker-pool concurrency, and the per-stack status API + drift UI.
 
 ## Dry run
 

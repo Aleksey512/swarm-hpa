@@ -55,8 +55,9 @@ services explicitly marked for management are acted upon. Transparency beats
   `stacks.yaml` compatibility; dry-run-aware; fully logged. SOPS secret decryption
   (age/gpg) and config/secret rotation by content hash reach full swarm-cd parity.
   Stacks sync on a bounded worker pool (`--gitops-concurrency`, default 4); stacks
-  sharing a repo serialize on their single shared on-disk worktree. Opt-in, off by
-  default.
+  sharing a repo serialize on their single shared on-disk worktree. A read-only
+  per-stack status API + non-autoscaled drift UI is served at `GET /stacks` on the
+  metrics endpoint. Opt-in, off by default.
 - **Scale stabilization** — cooldown windows and step limits to prevent
   flapping (separate scale-up / scale-down cooldowns, analogous to K8s HPA
   stabilization windows).

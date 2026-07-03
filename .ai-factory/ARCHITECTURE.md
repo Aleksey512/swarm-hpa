@@ -45,7 +45,8 @@ skill). Module path is illustrative.
 │   │   ├── autoscaler/            # Pure scaling decision logic (metric+policy → desired replicas)
 │   │   ├── healer/                # Pure stuck-pending-task detection logic (TaskView → verdict)
 │   │   ├── placement/             # Pure Swarm placement-constraint matching (shared by healer + rebalancer)
-│   │   └── rebalancer/            # Pure load-imbalance decision (node loads → recommended task move)
+│   │   ├── rebalancer/            # Pure load-imbalance decision (node loads → recommended task move)
+│   │   └── stackstatus/           # Pure drift computation: desired vs live replicas (status API)
 │   │
 │   ├── app/                       # ── APPLICATION (use-case orchestration) ──
 │   │   ├── reconciler/            # Reconcile loop; the SINGLE guarded mutation path (dry-run + cooldown)
@@ -68,6 +69,8 @@ skill). Module path is illustrative.
 │   │   ├── stackrender/           # → implements port.StackRenderer (text/template{Values} + goccy/go-yaml)
 │   │   ├── stackdeploy/           # → implements port.StackDeployer (carry-forward + `docker stack deploy` via docker/cli)
 │   │   ├── sops/                  # → implements port.SecretDecrypter (in-place sops decrypt: age/gpg backends via env)
+│   │   ├── statusstore/           # → implements port.StackStatusStore (in-memory per-stack status; loop writes, API reads)
+│   │   ├── stackapi/              # → http.Handler: GET /stacks (JSON) + GET / (HTML UI) with on-demand drift
 │   │   └── observability/         # slog setup + prometheus client_golang /metrics (manager + agent recorders)
 │   │
 │   └── config/                    # Flag/env parsing + swarm.autoscaler.* label parsing → model
@@ -132,7 +135,11 @@ dependency rule is broken.
    it writes plaintext to disk. Each tick fans stacks out across a bounded worker
    pool (`--gitops-concurrency`); stacks that share a repo serialize end-to-end on
    its single on-disk worktree (decrypt/rotation mutate it in place), so effective
-   parallelism is bounded by the number of distinct repos.
+   parallelism is bounded by the number of distinct repos. A read-only status
+   surface — `GET /stacks` (JSON) and a static HTML UI on the metrics listener — is
+   fed by an in-memory `StackStatusStore` the loop writes; drift is a pure
+   `core/stackstatus` function over live (`StackStateReader`) vs last-rendered
+   desired replicas, computed per request (no mutations, no route through the Guard).
 
 ## Code Examples
 

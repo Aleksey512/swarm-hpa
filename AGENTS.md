@@ -36,7 +36,8 @@ source layout follows the Explicit Architecture (ports & adapters) in
 │   │   ├── model/           # domain types: ServicePolicy, ManagedService, TaskView, NodeView
 │   │   ├── port/            # interfaces: SwarmController (read), Clock (MetricsProvider later)
 │   │   ├── autoscaler/      # scaling decision: metric+policy → desired replicas (clamp, tolerance)
-│   │   └── healer/          # stuck-task detection logic (placeholder)
+│   │   ├── healer/          # stuck-task detection logic (placeholder)
+│   │   └── stackstatus/     # pure drift computation: desired vs live replicas (status API)
 │   ├── app/
 │   │   ├── reconciler/      # reconcile loop + Guard (the single dry-run + cooldown mutation chokepoint)
 │   │   └── gitopsync/       # GitOps stack-sync loop: git→render→decrypt→rotate→(dry-run gate)→deploy (autoscaler-aware)
@@ -47,6 +48,8 @@ source layout follows the Explicit Architecture (ports & adapters) in
 │   │   ├── stackrender/     # GitOps: text/template{Values} + goccy/go-yaml (implements port.StackRenderer)
 │   │   ├── stackdeploy/     # GitOps: carry-forward + `docker stack deploy` (implements port.StackDeployer)
 │   │   ├── sops/            # GitOps: in-place sops decrypt (implements port.SecretDecrypter)
+│   │   ├── statusstore/     # GitOps: in-memory per-stack status (implements port.StackStatusStore)
+│   │   ├── stackapi/        # GitOps: GET /stacks JSON + HTML UI with on-demand drift (http.Handler)
 │   │   └── observability/   # slog logging setup (live); /metrics endpoint (future)
 │   └── config/              # flag/env config + swarm.autoscaler.* label parsing
 ├── Makefile                 # build/run/test/test-race/test-integration/lint/fmt/cover + docker-build/run/push
