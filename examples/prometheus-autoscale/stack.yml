@@ -1,0 +1,109 @@
+# Example: autoscaling on a Prometheus PromQL signal (requests/sec per replica)
+# =============================================================================
+# Two services on a shared overlay network:
+#   - prometheus : scrapes every replica of `app` (see ./prometheus.yml)
+#   - app        : quay.io/brancz/prometheus-example-app, exposes
+#                  http_requests_total on :8080 — the metric we scale on.
+#
+# DEPLOY AS `promdemo` (the name matters — ./prometheus.yml is coupled to it):
+#   docker stack deploy -c examples/prometheus-autoscale/stack.yml promdemo
+# This creates services `promdemo_prometheus` and `promdemo_app`; the daemon's
+# $SERVICE placeholder expands to `promdemo_app`, matching the `service` label
+# stamped in prometheus.yml. Use a different stack name only if you also edit
+# prometheus.yml (see the note there).
+#
+# RUN THE DAEMON with the Prometheus URL available (dry-run first). The global
+# provider can stay dockerstats — only `app` opts into Prometheus via `source`:
+#   make run ARGS="--dry-run=false --prometheus-url=http://localhost:9090 --log-level=debug"
+# Prometheus is published on :9090; the daemon reaches it at localhost:9090.
+#
+# GENERATE LOAD to push per-replica rps above target (app is published on :8081):
+#   examples/cpu-autoscale/loadgen.sh http://localhost:8081/
+#   # or:  while true; do curl -s http://localhost:8081/ >/dev/null; done
+# Expect the daemon to log:
+#   level=INFO msg="scaling decision" service=promdemo_app source=prometheus value=... target=50 desired=...
+#
+# Tear down:
+#   docker stack rm promdemo
+# =============================================================================
+version: "3.8"
+
+networks:
+  # Shared overlay so Prometheus can resolve `tasks.promdemo_app` (all replicas).
+  demo-net:
+    driver: overlay
+
+configs:
+  # `file:` is resolved relative to this compose file's directory, so
+  # ./prometheus.yml is examples/prometheus-autoscale/prometheus.yml.
+  prometheus_config:
+    file: ./prometheus.yml
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    networks:
+      - demo-net
+    ports:
+      - target: 9090
+        published: 9090
+        protocol: tcp
+        mode: ingress
+    # Mount at the default config path so we don't have to override the command.
+    configs:
+      - source: prometheus_config
+        target: /etc/prometheus/prometheus.yml
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: any
+        delay: 5s
+
+  app:
+    image: quay.io/brancz/prometheus-example-app:v0.5.0
+    networks:
+      - demo-net
+    ports:
+      - target: 8080
+        published: 8081        # 8081 to avoid clashing with the cpu-autoscale demo (8080)
+        protocol: tcp
+        mode: ingress
+    deploy:
+      mode: replicated
+      replicas: 3
+
+      # ---------------------------------------------------------------------
+      # OPT-IN POLICY — SERVICE labels (deploy.labels), not container labels.
+      # A service is managed only with enabled=true AND a valid policy.
+      # ---------------------------------------------------------------------
+      labels:
+        swarm.autoscaler.enabled: "true"
+        swarm.autoscaler.min: "3"
+        swarm.autoscaler.max: "20"
+        swarm.autoscaler.metric: "rps"          # logical name only (for logs) when source=prometheus
+        swarm.autoscaler.target: "50"           # target PER-REPLICA rps
+        swarm.autoscaler.source: "prometheus"   # this service uses the Prometheus provider
+        # PromQL: total rps across replicas ÷ replica count = per-replica rps.
+        # Target semantics: desired = clamp(current × value/target, min, max).
+        #
+        # ESCAPING: `$$` is REQUIRED here. `docker stack deploy` interpolates a
+        # single `$` as a compose variable, which would blank out $SERVICE. `$$`
+        # renders to a literal `$SERVICE` in the deployed label; the DAEMON then
+        # expands $SERVICE → the Swarm service name (promdemo_app). The result
+        # must reduce to one number, else the tick is skipped (never a wrong scale).
+        swarm.autoscaler.query: 'sum(rate(http_requests_total{service="$$SERVICE"}[1m]))/scalar(count(up{service="$$SERVICE"}))'
+
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
+        reservations:
+          cpus: "0.02"
+          memory: 16M
+      restart_policy:
+        condition: any
+        delay: 5s

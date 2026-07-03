@@ -1,0 +1,58 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/bin/
+/swarm-hpa
+
+# Test binary, built with `go test -c`
+*.test
+
+# Code coverage profiles and other test artifacts
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+
+# Dependency directories (remove the comment below to include it)
+# vendor/
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Env / local
+.env
+.env.*
+!.env.example
+
+# Editor/IDE
+# .idea/
+# .vscode/
+
+# OS / editor cruft
+.DS_Store
+
+# Attachment files (stored inside project .ai-factory/files/)
+.ai-factory/files/
+.ai-factory/PLAN.md
+
+# AI Factory (keep tracked files, ignore generated)
+.ai-factory.json
+.ai-factory/skill-context/
+.mcp.json
+
+# Claude Code
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/pr-review/
+
+# Codex and other agent
+/.codex/
+/.agents/
+/.github/skills/
+.junie/
+/.stryker-tmp/

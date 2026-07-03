@@ -1,0 +1,33 @@
+# Keep the build context minimal: only go.mod/go.sum + cmd/ + internal/ are
+# needed to compile ./cmd/swarm-hpa. Everything below is excluded.
+
+# VCS & CI
+.git
+.gitignore
+.github
+
+# AI-factory / agent tooling
+.ai-factory
+.claude
+AGENTS.md
+
+# Docs & meta (not needed in the image; VERSION comes from a build-arg)
+docs
+*.md
+LICENSE
+
+# Build outputs & coverage
+bin
+coverage.out
+
+# Deploy manifests & tool configs (not part of the image build)
+deploy
+Dockerfile
+.dockerignore
+Makefile
+.golangci.yml
+
+# Editor / OS noise
+.vscode
+.idea
+.DS_Store

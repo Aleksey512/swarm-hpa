@@ -1,0 +1,71 @@
+# Example: stuck-pending task healer (works around moby/moby#42215)
+# =============================================================================
+# A service PINNED to a specific node via a placement constraint. When that node
+# goes down and later recovers, Swarm can leave the task `pending` forever — the
+# daemon detects that signature and force-updates the service to unstick it.
+#
+# The heal signature (all must hold — see docs/configuration.md):
+#   1. the service has placement constraints, AND
+#   2. a task has been `pending` (while Swarm wants it running) for at least
+#      --heal-threshold, AND
+#   3. a node satisfying the constraints is now Active+Ready (it recovered).
+#
+# CRITICAL: healing only acts on MANAGED services. This service therefore also
+# carries the full opt-in policy (enabled + valid min/max/metric/target) under
+# `deploy.labels`. min=max=1 makes autoscaling a deliberate no-op so the demo
+# isolates healing. A bare placement-constraint service (no swarm.autoscaler.*
+# labels) is NOT managed and would never be healed.
+#
+# ------------------------- Reproduce (needs a node label) -------------------
+#   # 1. Pick a node and give it the label the constraint requires:
+#   docker node update --label-add nodeNum=1 <node-id>
+#
+#   # 2. Deploy — the task schedules onto that node:
+#   docker stack deploy -c examples/healer/stack.yml healer
+#
+#   # 3. Simulate the node going away, then recovering:
+#   docker node update --availability drain  <node-id>   # task becomes pending
+#   docker node update --availability active <node-id>   # node is back; task may STAY pending (the bug)
+#
+#   # 4. Run the daemon (dry-run first). After --heal-threshold it logs the intent:
+#   make run ARGS="--log-level=debug --heal-threshold=1m"
+#   #   level=INFO msg="dry-run: would force-update (heal)" service=healer_pinned ...
+#   # Enable the real fix:
+#   make run ARGS="--dry-run=false --heal-threshold=1m"
+#   #   the daemon force-updates healer_pinned and the task recovers.
+#
+# Note: heal actions are rate-limited by --cooldown (default 3m). On a SINGLE-node
+# lab the scenario is approximate — draining the only node leaves the task pending
+# and re-activating usually reschedules it; a 2+-node swarm (where the constraint
+# keeps the task from moving elsewhere) reproduces the moby#42215 stall cleanly.
+#
+# Tear down:
+#   docker stack rm healer
+#   docker node update --label-rm nodeNum <node-id>
+# =============================================================================
+version: "3.8"
+
+services:
+  pinned:
+    image: nginx:alpine
+    deploy:
+      mode: replicated
+      replicas: 1
+
+      # The placement constraint is what makes this service heal-eligible.
+      placement:
+        constraints:
+          - node.labels.nodeNum == 1
+
+      # Opt-in policy (SERVICE labels). min=max=1 => autoscaling never changes
+      # the replica count; this example is purely about the healer.
+      labels:
+        swarm.autoscaler.enabled: "true"
+        swarm.autoscaler.min: "1"
+        swarm.autoscaler.max: "1"
+        swarm.autoscaler.metric: "cpu"
+        swarm.autoscaler.target: "80"
+
+      restart_policy:
+        condition: any
+        delay: 5s

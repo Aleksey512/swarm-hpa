@@ -1,0 +1,38 @@
+# golangci-lint v2 configuration
+# Install: https://golangci-lint.run/welcome/install/  (v2 required)
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  # `standard` already includes errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+  enable:
+    - revive       # style / best-practice rules
+    - gocritic     # opinionated correctness & performance checks
+    - gosec        # security issues (this daemon mutates prod services)
+    - misspell     # commented/string typos
+    - unconvert    # redundant type conversions
+    - bodyclose    # HTTP response bodies must be closed (Prometheus/Docker calls)
+  settings:
+    revive:
+      rules:
+        - name: package-comments
+        - name: exported
+    gosec:
+      excludes:
+        - G104 # handled by errcheck
+  exclusions:
+    generated: lax
+    rules:
+      # Tests may use weaker patterns that are noise outside production code.
+      - path: _test\.go
+        linters:
+          - gosec
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
