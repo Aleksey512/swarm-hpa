@@ -57,6 +57,13 @@ type Loop struct {
 	mu              sync.Mutex
 	lastDeployedRev map[string]string
 	lastDeployedOK  map[string]bool
+
+	// concurrency caps how many syncStack goroutines run at once. repoLocks
+	// serializes stacks that share a repo end-to-end (one on-disk worktree per
+	// repo); repoMu guards the lazy allocation of repoLocks.
+	concurrency int
+	repoMu      sync.Mutex
+	repoLocks   map[string]*sync.Mutex
 }
 
 // New constructs the loop. sops decrypts secret files in place (nil disables
@@ -72,6 +79,7 @@ func New(
 	pullPolicy string,
 	dryRun bool,
 	autoRotate bool,
+	concurrency int,
 	logger *slog.Logger,
 	opts ...Option,
 ) *Loop {
@@ -80,6 +88,9 @@ func New(
 	}
 	if recorder == nil {
 		recorder = port.NopRecorder{}
+	}
+	if concurrency < 1 {
+		concurrency = 1 // defensive: a misconfigured knob never panics or runs unbounded
 	}
 	l := &Loop{
 		git:             git,
@@ -91,10 +102,12 @@ func New(
 		pullPolicy:      pullPolicy,
 		dryRun:          dryRun,
 		autoRotate:      autoRotate,
+		concurrency:     concurrency,
 		logger:          logger,
 		tickSource:      defaultTickSource,
 		lastDeployedRev: make(map[string]string),
 		lastDeployedOK:  make(map[string]bool),
+		repoLocks:       make(map[string]*sync.Mutex),
 	}
 	for _, opt := range opts {
 		opt(l)
@@ -108,7 +121,8 @@ func New(
 func (l *Loop) Run(ctx context.Context, interval time.Duration) error {
 	l.logger.Info("gitops loop started",
 		"interval", interval, "stacks", len(l.stacks), "dry_run", l.dryRun,
-		"pull_policy", l.pullPolicy, "auto_rotate", l.autoRotate)
+		"pull_policy", l.pullPolicy, "auto_rotate", l.autoRotate,
+		"concurrency", l.concurrency)
 	if l.customTick {
 		l.logger.Debug("custom tick source injected (non-default)")
 	}
@@ -128,12 +142,28 @@ func (l *Loop) Run(ctx context.Context, interval time.Duration) error {
 	}
 }
 
-// syncAll runs one sync pass over every configured stack.
+// syncAll runs one sync pass over every configured stack. Stacks are synced on a
+// bounded worker pool (up to l.concurrency in flight); one stack's failure or
+// panic never stops the others. Stacks that share a repo are serialized inside
+// syncStack (one on-disk worktree per repo).
 func (l *Loop) syncAll(ctx context.Context) {
 	defer l.recorder.SyncRun()
+	l.logger.Debug("gitops: syncing stacks", "stacks", len(l.stacks), "concurrency", l.concurrency)
+
+	// Counting semaphore + WaitGroup: bounds parallelism without cancelling
+	// siblings on the first error (each syncStack recovers and records on its own).
+	sem := make(chan struct{}, l.concurrency)
+	var wg sync.WaitGroup
 	for _, st := range l.stacks {
-		l.syncStack(ctx, st)
+		wg.Add(1)
+		sem <- struct{}{} // block until a worker slot is free
+		go func(st model.StackConfig) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			l.syncStack(ctx, st)
+		}(st)
 	}
+	wg.Wait()
 }
 
 // syncStack syncs a single stack end-to-end. It recovers from panics so one bad
@@ -146,6 +176,15 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 		}
 	}()
 	log := l.logger.With(slog.String("stack", st.Name))
+
+	// Serialize stacks that share a repo for the WHOLE pipeline. There is one
+	// on-disk worktree per repo (reposPath/<repo>), shared by every stack on it,
+	// and this pipeline mutates it in place (sops writes plaintext) and reads it
+	// (rotation). The git adapter's per-repo lock only guards Sync, so the entire
+	// Sync→ReadFile→Render→Decrypt→Rotate→Deploy sequence is locked here.
+	unlock := l.acquireRepoLock(st.Repo)
+	defer unlock()
+	log.Debug("gitops: acquired repo lock", "repo", st.Repo)
 
 	rev, err := l.git.Sync(ctx, st)
 	if err != nil {
@@ -248,6 +287,22 @@ func (l *Loop) markDeploy(name, rev string, ok bool) {
 	defer l.mu.Unlock()
 	l.lastDeployedRev[name] = rev
 	l.lastDeployedOK[name] = ok
+}
+
+// acquireRepoLock locks the per-repo mutex (allocating it lazily on first use)
+// and returns an unlock function. Stacks that share a repo serialize end-to-end;
+// stacks on different repos run concurrently. One on-disk worktree per repo
+// makes this mandatory: decrypt and rotation mutate that shared worktree.
+func (l *Loop) acquireRepoLock(repo string) func() {
+	l.repoMu.Lock()
+	lock, ok := l.repoLocks[repo]
+	if !ok {
+		lock = &sync.Mutex{}
+		l.repoLocks[repo] = lock
+	}
+	l.repoMu.Unlock()
+	lock.Lock()
+	return lock.Unlock
 }
 
 // defaultTickSource is the production tick source: a real time.Ticker.

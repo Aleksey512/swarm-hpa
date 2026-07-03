@@ -157,7 +157,7 @@ func runManager(ctx context.Context, cfg config.Config, cli *client.Client, logg
 			deployer,
 			sops.New(logger),
 			recorder, stacks,
-			cfg.GitOpsPullPolicy, cfg.DryRun, cfg.GitOpsAutoRotate, logger,
+			cfg.GitOpsPullPolicy, cfg.DryRun, cfg.GitOpsAutoRotate, cfg.GitOpsConcurrency, logger,
 		)
 		sopsStacks := 0
 		for _, s := range stacks {
@@ -168,7 +168,8 @@ func runManager(ctx context.Context, cfg config.Config, cli *client.Client, logg
 		logger.Info("gitops enabled",
 			"stacks", len(stacks), "interval", cfg.GitOpsInterval,
 			"repos_path", cfg.GitOpsReposPath, "pull_policy", cfg.GitOpsPullPolicy,
-			"dry_run", cfg.DryRun, "auto_rotate", cfg.GitOpsAutoRotate, "sops_stacks", sopsStacks)
+			"dry_run", cfg.DryRun, "auto_rotate", cfg.GitOpsAutoRotate,
+			"concurrency", cfg.GitOpsConcurrency, "sops_stacks", sopsStacks)
 		go func() {
 			if err := gitLoop.Run(ctx, cfg.GitOpsInterval); err != nil {
 				logger.Error("gitops loop failed", "err", err)

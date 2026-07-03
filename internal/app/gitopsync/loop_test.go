@@ -3,6 +3,7 @@ package gitopsync
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
@@ -22,13 +23,16 @@ func stacks(name, compose string) []model.StackConfig {
 // --- fakes ---
 
 type fakeGit struct {
-	revs  []string // returned in order; last is reused
+	mu    sync.Mutex // guards n against concurrent Sync calls (parallel stacks)
+	revs  []string   // returned in order; last is reused
 	files map[string][]byte
 	err   error // if set, Sync fails
 	n     int
 }
 
 func (f *fakeGit) Sync(_ context.Context, _ model.StackConfig) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.err != nil {
 		return "", f.err
 	}
@@ -145,7 +149,7 @@ func TestLoop_NewRevisionDeploysThenSkips(t *testing.T) {
 	git := &fakeGit{revs: []string{"aaa", "bbb"}, files: map[string][]byte{"compose.yaml": []byte("services:\n")}}
 	dep := newFakeDeployer(nil)
 	src, tick := manualTicks()
-	l := New(git, fakeRenderer{}, dep, nil, &fakeRec{}, stacks("s", "compose.yaml"), "changed", false, false, testLogger(), WithTickSource(src))
+	l := New(git, fakeRenderer{}, dep, nil, &fakeRec{}, stacks("s", "compose.yaml"), "changed", false, false, 1, testLogger(), WithTickSource(src))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -177,7 +181,7 @@ func TestLoop_DryRunSkipsPrepareAndDeploy(t *testing.T) {
 	src, tick := manualTicks()
 	// Stack with sops files + autoRotate on — dry-run must skip decrypt/rotate/deploy.
 	st := []model.StackConfig{{Name: "s", Repo: "r", Branch: "main", ComposeFile: "compose.yaml", SopsFiles: []string{"secrets/tls.crt"}}}
-	l := New(git, fakeRenderer{}, dep, sops, rec, st, "changed", true, true, testLogger(), WithTickSource(src))
+	l := New(git, fakeRenderer{}, dep, sops, rec, st, "changed", true, true, 1, testLogger(), WithTickSource(src))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -207,7 +211,7 @@ func TestLoop_SopsDecryptTriggered(t *testing.T) {
 	sops := &fakeSops{}
 	st := []model.StackConfig{{Name: "s", Repo: "r", Branch: "main", ComposeFile: "compose.yaml", SopsFiles: []string{"secrets/a.yaml", "secrets/b.yaml"}}}
 	src, _ := manualTicks()
-	l := New(git, fakeRenderer{}, dep, sops, &fakeRec{}, st, "changed", false, false, testLogger(), WithTickSource(src))
+	l := New(git, fakeRenderer{}, dep, sops, &fakeRec{}, st, "changed", false, false, 1, testLogger(), WithTickSource(src))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -227,7 +231,7 @@ func TestLoop_DeployErrorRetriesAtSameRevision(t *testing.T) {
 	dep := newFakeDeployer([]error{errors.New("transient deploy failure"), nil}) // fail then succeed
 	rec := &fakeRec{}
 	src, tick := manualTicks()
-	l := New(git, fakeRenderer{}, dep, nil, rec, stacks("s", "compose.yaml"), "changed", false, false, testLogger(), WithTickSource(src))
+	l := New(git, fakeRenderer{}, dep, nil, rec, stacks("s", "compose.yaml"), "changed", false, false, 1, testLogger(), WithTickSource(src))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -254,7 +258,7 @@ func TestLoop_GitSyncErrorStopsBeforeRender(t *testing.T) {
 	dep := newFakeDeployer(nil)
 	rec := &fakeRec{}
 	src, _ := manualTicks()
-	l := New(git, fakeRenderer{}, dep, nil, rec, stacks("s", "compose.yaml"), "changed", false, false, testLogger(), WithTickSource(src))
+	l := New(git, fakeRenderer{}, dep, nil, rec, stacks("s", "compose.yaml"), "changed", false, false, 1, testLogger(), WithTickSource(src))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -282,7 +286,7 @@ func TestLoop_GitSyncErrorStopsBeforeRender(t *testing.T) {
 func TestLoop_CancelStops(t *testing.T) {
 	src, _ := manualTicks()
 	l := New(&fakeGit{revs: []string{"aaa"}, files: map[string][]byte{"compose.yaml": []byte("services:\n")}},
-		fakeRenderer{}, newFakeDeployer(nil), nil, &fakeRec{}, stacks("s", "compose.yaml"), "changed", false, false, testLogger(), WithTickSource(src))
+		fakeRenderer{}, newFakeDeployer(nil), nil, &fakeRec{}, stacks("s", "compose.yaml"), "changed", false, false, 1, testLogger(), WithTickSource(src))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -294,5 +298,252 @@ func TestLoop_CancelStops(t *testing.T) {
 		// good
 	case <-time.After(time.Second):
 		t.Fatal("Run did not return after ctx cancel")
+	}
+}
+
+// --- concurrency tests ---
+
+// trackingDeployer instruments the worker pool: it records the peak number of
+// simultaneously-active Deploy calls (the concurrency bound), whether two
+// stacks on the same repo ever overlapped (they must not), the total attempted
+// deploys, and can fail a specific stack by name. block holds each call so
+// overlap is observable rather than a sub-microsecond blip.
+type trackingDeployer struct {
+	mu           sync.Mutex
+	inFlight     int
+	peak         int
+	total        int
+	repoOf       func(stack string) string
+	repoInflight map[string]int
+	overlap      map[string]bool
+	block        time.Duration
+	failStack    string
+}
+
+func (d *trackingDeployer) Deploy(_ context.Context, stack string, _ map[string]any, _ port.DeployOpts) error {
+	repo := ""
+	if d.repoOf != nil {
+		repo = d.repoOf(stack)
+	}
+	d.mu.Lock()
+	d.total++
+	d.inFlight++
+	if d.inFlight > d.peak {
+		d.peak = d.inFlight
+	}
+	if repo != "" {
+		d.repoInflight[repo]++
+		if d.repoInflight[repo] > 1 {
+			d.overlap[repo] = true
+		}
+	}
+	d.mu.Unlock()
+
+	if d.block > 0 {
+		time.Sleep(d.block)
+	}
+
+	d.mu.Lock()
+	d.inFlight--
+	if repo != "" {
+		d.repoInflight[repo]--
+	}
+	d.mu.Unlock()
+
+	if d.failStack != "" && stack == d.failStack {
+		return errors.New("synthetic deploy failure")
+	}
+	return nil
+}
+
+// waitForDeploys polls until at least want Deploy calls have been attempted, or
+// the timeout elapses (returns false).
+func waitForDeploys(d *trackingDeployer, want int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		d.mu.Lock()
+		got := d.total
+		d.mu.Unlock()
+		if got >= want {
+			return true
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	return false
+}
+
+// distinctRepoStacks builds n stacks, each on its own repo (repo = "r<i>"), so
+// the only concurrency bound is the worker-pool size.
+func distinctRepoStacks(n int) ([]model.StackConfig, func(string) string) {
+	st := make([]model.StackConfig, n)
+	repoOf := map[string]string{}
+	for i := 0; i < n; i++ {
+		name := fmt.Sprintf("s%d", i)
+		repo := fmt.Sprintf("r%d", i)
+		st[i] = model.StackConfig{Name: name, Repo: repo, Branch: "main", ComposeFile: "compose.yaml"}
+		repoOf[name] = repo
+	}
+	return st, func(s string) string { return repoOf[s] }
+}
+
+func TestSyncAll_ConcurrencyBound(t *testing.T) {
+	const n = 6
+	st, repoOf := distinctRepoStacks(n)
+	files := map[string][]byte{"compose.yaml": []byte("services:\n")}
+
+	t.Run("bounded by concurrency", func(t *testing.T) {
+		dep := &trackingDeployer{repoOf: repoOf, repoInflight: map[string]int{}, overlap: map[string]bool{}, block: 15 * time.Millisecond}
+		git := &fakeGit{revs: []string{"aaa"}, files: files}
+		src, _ := manualTicks()
+		l := New(git, fakeRenderer{}, dep, nil, &fakeRec{}, st, "changed", false, false, 2, testLogger(), WithTickSource(src))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { _ = l.Run(ctx, time.Hour); close(done) }()
+		if !waitForDeploys(dep, n, 2*time.Second) {
+			t.Fatalf("only %d/%d stacks deployed", dep.total, n)
+		}
+		cancel()
+		<-done
+
+		dep.mu.Lock()
+		peak := dep.peak
+		dep.mu.Unlock()
+		if peak > 2 {
+			t.Errorf("peak in-flight = %d, want <= 2 (concurrency bound not respected)", peak)
+		}
+		if peak < 2 {
+			t.Errorf("peak in-flight = %d, want exactly 2 (expected parallelism with 6 distinct-repo stacks)", peak)
+		}
+	})
+
+	t.Run("serial at concurrency=1", func(t *testing.T) {
+		dep := &trackingDeployer{repoOf: repoOf, repoInflight: map[string]int{}, overlap: map[string]bool{}, block: 15 * time.Millisecond}
+		git := &fakeGit{revs: []string{"aaa"}, files: files}
+		src, _ := manualTicks()
+		l := New(git, fakeRenderer{}, dep, nil, &fakeRec{}, st, "changed", false, false, 1, testLogger(), WithTickSource(src))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { _ = l.Run(ctx, time.Hour); close(done) }()
+		if !waitForDeploys(dep, n, 2*time.Second) {
+			t.Fatalf("only %d/%d stacks deployed", dep.total, n)
+		}
+		cancel()
+		<-done
+
+		dep.mu.Lock()
+		peak := dep.peak
+		dep.mu.Unlock()
+		if peak != 1 {
+			t.Errorf("peak in-flight = %d, want 1 (fully serial at concurrency=1)", peak)
+		}
+	})
+}
+
+func TestSyncAll_PerRepoSerialization(t *testing.T) {
+	// Two stacks share repo "shared" (must serialize); a third is on repo "solo"
+	// (must run alongside one of the shared-repo stacks → cross-repo parallelism).
+	st := []model.StackConfig{
+		{Name: "a", Repo: "shared", Branch: "main", ComposeFile: "compose.yaml"},
+		{Name: "b", Repo: "shared", Branch: "main", ComposeFile: "compose.yaml"},
+		{Name: "c", Repo: "solo", Branch: "main", ComposeFile: "compose.yaml"},
+	}
+	repoMap := map[string]string{"a": "shared", "b": "shared", "c": "solo"}
+	files := map[string][]byte{"compose.yaml": []byte("services:\n")}
+
+	dep := &trackingDeployer{
+		repoOf:       func(s string) string { return repoMap[s] },
+		repoInflight: map[string]int{},
+		overlap:      map[string]bool{},
+		block:        25 * time.Millisecond, // long enough for overlap to be observable
+	}
+	git := &fakeGit{revs: []string{"aaa"}, files: files}
+	src, _ := manualTicks()
+	l := New(git, fakeRenderer{}, dep, nil, &fakeRec{}, st, "changed", false, false, 3, testLogger(), WithTickSource(src))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = l.Run(ctx, time.Hour); close(done) }()
+	if !waitForDeploys(dep, 3, 2*time.Second) {
+		t.Fatalf("only %d/3 stacks deployed", dep.total)
+	}
+	cancel()
+	<-done
+
+	dep.mu.Lock()
+	defer dep.mu.Unlock()
+	if dep.overlap["shared"] {
+		t.Error("same-repo stacks (a,b) overlapped on repo \"shared\"; they must serialize end-to-end")
+	}
+	// With concurrency 3, the two shared-repo stacks serialize but the solo stack
+	// runs alongside one of them, so at least two deploys overlap.
+	if dep.peak < 2 {
+		t.Errorf("peak in-flight = %d, want >= 2 (cross-repo parallelism expected)", dep.peak)
+	}
+}
+
+func TestSyncAll_OneFailureDoesNotStopOthers(t *testing.T) {
+	st := []model.StackConfig{
+		{Name: "boom", Repo: "r1", Branch: "main", ComposeFile: "compose.yaml"},
+		{Name: "ok1", Repo: "r2", Branch: "main", ComposeFile: "compose.yaml"},
+		{Name: "ok2", Repo: "r3", Branch: "main", ComposeFile: "compose.yaml"},
+	}
+	repoMap := map[string]string{"boom": "r1", "ok1": "r2", "ok2": "r3"}
+	files := map[string][]byte{"compose.yaml": []byte("services:\n")}
+	dep := &trackingDeployer{repoOf: func(s string) string { return repoMap[s] }, repoInflight: map[string]int{}, overlap: map[string]bool{}, failStack: "boom"}
+	rec := &fakeRec{}
+	git := &fakeGit{revs: []string{"aaa"}, files: files}
+	src, _ := manualTicks()
+	l := New(git, fakeRenderer{}, dep, nil, rec, st, "changed", false, false, 3, testLogger(), WithTickSource(src))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = l.Run(ctx, time.Hour); close(done) }()
+	if !waitForDeploys(dep, 3, 2*time.Second) {
+		t.Fatalf("only %d/3 stacks attempted deploy", dep.total)
+	}
+	cancel()
+	<-done
+
+	if dep.total != 3 {
+		t.Fatalf("all 3 stacks must attempt deploy even when one fails; got %d", dep.total)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	deployed := map[string]bool{}
+	for _, s := range rec.deployed {
+		deployed[s] = true
+	}
+	if !deployed["ok1"] || !deployed["ok2"] {
+		t.Errorf("ok1/ok2 must still deploy when another stack fails; deployed=%v", rec.deployed)
+	}
+	if deployed["boom"] {
+		t.Errorf("boom must not be recorded as deployed (its deploy failed); deployed=%v", rec.deployed)
+	}
+}
+
+func TestNew_ConcurrencyClamped(t *testing.T) {
+	// concurrency < 1 must not panic and must behave as 1 (serial). Drive one
+	// quick pass and confirm it returns cleanly.
+	cases := []int{0, -1, -5}
+	for _, n := range cases {
+		st, _ := distinctRepoStacks(3)
+		git := &fakeGit{revs: []string{"aaa"}, files: map[string][]byte{"compose.yaml": []byte("services:\n")}}
+		dep := &trackingDeployer{repoInflight: map[string]int{}, overlap: map[string]bool{}}
+		src, _ := manualTicks()
+		l := New(git, fakeRenderer{}, dep, nil, &fakeRec{}, st, "changed", false, false, n, testLogger(), WithTickSource(src))
+		if l.concurrency != 1 {
+			t.Errorf("concurrency=%d should clamp to 1, got %d", n, l.concurrency)
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { _ = l.Run(ctx, time.Hour); close(done) }()
+		if !waitForDeploys(dep, 3, 2*time.Second) {
+			t.Fatalf("concurrency=%d: only %d/3 stacks deployed", n, dep.total)
+		}
+		cancel()
+		<-done
 	}
 }

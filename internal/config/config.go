@@ -120,6 +120,11 @@ type Config struct {
 	// secrets to <stack>-<name>-<content-hash> before deploy so Swarm picks up
 	// changed content (swarm-cd auto_rotate). Applies globally to all stacks.
 	GitOpsAutoRotate bool
+	// GitOpsConcurrency caps how many stacks the GitOps loop syncs in parallel via
+	// a bounded worker pool. Stacks that share a repo serialize on that repo (there
+	// is one on-disk worktree per repo), so effective parallelism is bounded by
+	// min(GitOpsConcurrency, number of distinct repos). Default 4; must be >= 1.
+	GitOpsConcurrency int
 
 	// --- Agent-only settings (ignored in manager mode) ---
 
@@ -159,6 +164,7 @@ func Default() Config {
 		GitOpsInterval:    120 * time.Second,
 		GitOpsPullPolicy:  "always",
 		GitOpsAutoRotate:  true,
+		GitOpsConcurrency: 4,
 
 		ReportInterval: 15 * time.Second,
 	}
@@ -244,6 +250,9 @@ func (c Config) validateManager() error {
 		if c.GitOpsInterval <= 0 {
 			return fmt.Errorf("gitops_interval must be > 0, got %s", c.GitOpsInterval)
 		}
+		if c.GitOpsConcurrency < 1 {
+			return fmt.Errorf("gitops_concurrency must be >= 1, got %d", c.GitOpsConcurrency)
+		}
 		if strings.TrimSpace(c.GitOpsConfigsPath) == "" {
 			return fmt.Errorf("gitops_configs_path must not be empty when gitops is enabled")
 		}
@@ -304,6 +313,7 @@ func (c Config) LogValue() slog.Value {
 		slog.Duration("gitops_interval", c.GitOpsInterval),
 		slog.String("gitops_pull_policy", c.GitOpsPullPolicy),
 		slog.Bool("gitops_auto_rotate", c.GitOpsAutoRotate),
+		slog.Int("gitops_concurrency", c.GitOpsConcurrency),
 	)
 }
 
@@ -488,6 +498,13 @@ func LoadArgs(args []string, lookupEnv func(string) (string, bool)) (Config, err
 		}
 		c.GitOpsAutoRotate = b
 	}
+	if v, ok := lookupEnv("GITOPS_CONCURRENCY"); ok {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("env GITOPS_CONCURRENCY=%q: %w", v, err)
+		}
+		c.GitOpsConcurrency = n
+	}
 
 	fs := flag.NewFlagSet("swarm-hpa", flag.ContinueOnError)
 	fs.SetOutput(io.Discard) // errors are returned, not printed
@@ -519,6 +536,7 @@ func LoadArgs(args []string, lookupEnv func(string) (string, bool)) (Config, err
 	gitopsInterval := fs.Duration("gitops-interval", c.GitOpsInterval, "manager: stack-sync loop interval")
 	gitopsPullPolicy := fs.String("gitops-pull-policy", c.GitOpsPullPolicy, "manager: image resolution mode for `docker stack deploy`: always|changed")
 	gitopsAutoRotate := fs.Bool("gitops-auto-rotate", c.GitOpsAutoRotate, "manager: rename file-backed configs/secrets to <stack>-<name>-<hash> so Swarm picks up changed content (swarm-cd auto_rotate)")
+	gitopsConcurrency := fs.Int("gitops-concurrency", c.GitOpsConcurrency, "manager: max number of stacks synced in parallel (stacks sharing a repo serialize)")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, fmt.Errorf("parse flags: %w", err)
@@ -552,6 +570,7 @@ func LoadArgs(args []string, lookupEnv func(string) (string, bool)) (Config, err
 	c.GitOpsInterval = *gitopsInterval
 	c.GitOpsPullPolicy = *gitopsPullPolicy
 	c.GitOpsAutoRotate = *gitopsAutoRotate
+	c.GitOpsConcurrency = *gitopsConcurrency
 
 	if err := c.Validate(); err != nil {
 		return Config{}, fmt.Errorf("invalid configuration: %w", err)

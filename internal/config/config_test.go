@@ -60,6 +60,39 @@ func TestLoadArgsGitOpsAutoRotate(t *testing.T) {
 	}
 }
 
+func TestLoadArgsGitOpsConcurrency(t *testing.T) {
+	// default is 4
+	c, err := LoadArgs(nil, fakeEnv(nil))
+	if err != nil || c.GitOpsConcurrency != 4 {
+		t.Fatalf("default concurrency: err=%v got=%d want=4", err, c.GitOpsConcurrency)
+	}
+	// env overrides default
+	c, err = LoadArgs(nil, fakeEnv(map[string]string{"GITOPS_CONCURRENCY": "8"}))
+	if err != nil || c.GitOpsConcurrency != 8 {
+		t.Fatalf("env concurrency: err=%v got=%d want=8", err, c.GitOpsConcurrency)
+	}
+	// flag overrides env
+	c, err = LoadArgs([]string{"--gitops-concurrency=2"}, fakeEnv(map[string]string{"GITOPS_CONCURRENCY": "8"}))
+	if err != nil || c.GitOpsConcurrency != 2 {
+		t.Fatalf("flag concurrency: err=%v got=%d want=2", err, c.GitOpsConcurrency)
+	}
+	// malformed env (non-integer) is rejected
+	if _, err := LoadArgs(nil, fakeEnv(map[string]string{"GITOPS_CONCURRENCY": "many"})); err == nil {
+		t.Fatal("malformed GITOPS_CONCURRENCY must be rejected")
+	}
+	// < 1 is rejected, but only when gitops is enabled (validation is gated on GitOpsEnabled)
+	if _, err := LoadArgs([]string{"--gitops", "--gitops-concurrency=0"}, fakeEnv(nil)); err == nil {
+		t.Error("gitops_concurrency=0 must be rejected when gitops is enabled")
+	}
+	if _, err := LoadArgs([]string{"--gitops", "--gitops-concurrency=-1"}, fakeEnv(nil)); err == nil {
+		t.Error("negative gitops_concurrency must be rejected when gitops is enabled")
+	}
+	// < 1 is allowed when gitops is disabled (validation skipped, same as gitops_interval)
+	if _, err := LoadArgs([]string{"--gitops-concurrency=0"}, fakeEnv(nil)); err != nil {
+		t.Errorf("gitops_concurrency=0 with gitops disabled should be accepted, got %v", err)
+	}
+}
+
 func TestLoadGitOpsSopsFields(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "repos.yaml"), []byte("myrepo:\n  url: https://example.com/repo.git\n"), 0o600); err != nil {

@@ -132,7 +132,7 @@ func TestGitOpsLoop_CarryForwardEndToEnd(t *testing.T) {
 	deployer := stackdeploy.New(liveState{}, cap.fn(), testLogger())
 
 	tickSrc, _ := manualTicks()
-	loop := New(src, renderer, deployer, nil, &fakeRec{}, stacks("mystack", "compose.yaml"), "changed", false, false, testLogger(), WithTickSource(tickSrc))
+	loop := New(src, renderer, deployer, nil, &fakeRec{}, stacks("mystack", "compose.yaml"), "changed", false, false, 1, testLogger(), WithTickSource(tickSrc))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -170,7 +170,7 @@ func TestGitOpsLoop_DryRunDoesNotDeploy(t *testing.T) {
 	rec := &fakeRec{}
 
 	tickSrc, tick := manualTicks()
-	loop := New(src, renderer, deployer, nil, rec, stacks("mystack", "compose.yaml"), "changed", true, false, testLogger(), WithTickSource(tickSrc))
+	loop := New(src, renderer, deployer, nil, rec, stacks("mystack", "compose.yaml"), "changed", true, false, 1, testLogger(), WithTickSource(tickSrc))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -279,7 +279,7 @@ secrets:
 	st := []model.StackConfig{{Name: "mystack", Repo: "r", Branch: "main", ComposeFile: "compose.yaml", SopsSecretsDiscovery: true}}
 
 	tickSrc, _ := manualTicks()
-	loop := New(src, stackrender.New(testLogger()), deployer, sops, &fakeRec{}, st, "changed", false, true, testLogger(), WithTickSource(tickSrc))
+	loop := New(src, stackrender.New(testLogger()), deployer, sops, &fakeRec{}, st, "changed", false, true, 1, testLogger(), WithTickSource(tickSrc))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -329,7 +329,7 @@ configs:
 	st := []model.StackConfig{{Name: "mystack", Repo: "r", Branch: "main", ComposeFile: "compose.yaml"}}
 
 	tickSrc, _ := manualTicks()
-	loop := New(src, stackrender.New(testLogger()), deployer, nil, &fakeRec{}, st, "changed", false, false, testLogger(), WithTickSource(tickSrc))
+	loop := New(src, stackrender.New(testLogger()), deployer, nil, &fakeRec{}, st, "changed", false, false, 1, testLogger(), WithTickSource(tickSrc))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
