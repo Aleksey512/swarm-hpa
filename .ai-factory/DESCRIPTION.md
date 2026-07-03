@@ -69,7 +69,7 @@ services explicitly marked for management are acted upon. Transparency beats
 
 ## Tech Stack
 
-- **Programming language:** Go
+- **Programming language:** Go 1.25.0 (`go.mod`)
 - **Framework:** None (standard library oriented); CLI via stdlib `flag` + env
   vars
 - **Docker access:** Official Docker Go SDK (`github.com/docker/docker/client`, pinned `v28.5.2+incompatible`; option types in `api/types/swarm`)
