@@ -4,6 +4,8 @@ package gitopsync
 
 import (
 	"context"
+	"crypto/md5" //nolint:gosec // G501: content hash for test assertion, not a security primitive
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -130,7 +132,7 @@ func TestGitOpsLoop_CarryForwardEndToEnd(t *testing.T) {
 	deployer := stackdeploy.New(liveState{}, cap.fn(), testLogger())
 
 	tickSrc, _ := manualTicks()
-	loop := New(src, renderer, deployer, &fakeRec{}, stacks("mystack", "compose.yaml"), "changed", false, testLogger(), WithTickSource(tickSrc))
+	loop := New(src, renderer, deployer, nil, &fakeRec{}, stacks("mystack", "compose.yaml"), "changed", false, false, testLogger(), WithTickSource(tickSrc))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -168,7 +170,7 @@ func TestGitOpsLoop_DryRunDoesNotDeploy(t *testing.T) {
 	rec := &fakeRec{}
 
 	tickSrc, tick := manualTicks()
-	loop := New(src, renderer, deployer, rec, stacks("mystack", "compose.yaml"), "changed", true, testLogger(), WithTickSource(tickSrc))
+	loop := New(src, renderer, deployer, nil, rec, stacks("mystack", "compose.yaml"), "changed", true, false, testLogger(), WithTickSource(tickSrc))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -189,4 +191,161 @@ func TestGitOpsLoop_DryRunDoesNotDeploy(t *testing.T) {
 
 	cancel()
 	<-done
+}
+
+// --- M3: sops decrypt + rotation end-to-end ---
+
+// seedGitRepoFiles seeds a local repo with multiple files (compose + content files).
+func seedGitRepoFiles(t *testing.T, branch string, files map[string][]byte) string {
+	t.Helper()
+	dir := t.TempDir()
+	repo, err := git.PlainInit(dir, false)
+	if err != nil {
+		t.Fatalf("PlainInit: %v", err)
+	}
+	if err := repo.Storer.SetReference(plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.NewBranchReferenceName(branch))); err != nil {
+		t.Fatalf("set HEAD: %v", err)
+	}
+	wt, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("worktree: %v", err)
+	}
+	for name, content := range files {
+		full := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", name, err)
+		}
+		if err := os.WriteFile(full, content, 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		if _, err := wt.Add(name); err != nil {
+			t.Fatalf("add %s: %v", name, err)
+		}
+	}
+	if _, err := wt.Commit("init", &git.CommitOptions{Author: &object.Signature{Name: "t", Email: "t@example.com", When: time.Now()}}); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	return dir
+}
+
+// worktreeSops is a fake SecretDecrypter that overwrites each file with fixed
+// plaintext (stands in for real sops decrypt in the integration test).
+type worktreeSops struct{ plaintext map[string][]byte }
+
+func (w *worktreeSops) Decrypt(_ context.Context, worktree string, files []string) error {
+	for _, f := range files {
+		content, ok := w.plaintext[f]
+		if !ok {
+			return fmt.Errorf("worktreeSops: no plaintext for %q", f)
+		}
+		if err := os.WriteFile(filepath.Join(worktree, f), content, 0o600); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func md5hash8(b []byte) string { return fmt.Sprintf("%x", md5.Sum(b))[:8] } //nolint:gosec // G401: test assertion hash
+
+// TestGitOpsLoop_SopsDecryptRotateCarryForward proves the full M3 pipeline: git
+// sync -> render -> sops decrypt (in place) -> rotate configs/secrets by content
+// hash -> carry-forward preserves the autoscaler's replicas -> deploy.
+func TestGitOpsLoop_SopsDecryptRotateCarryForward(t *testing.T) {
+	compose := `services:
+  web:
+    image: nginx
+    deploy:
+      replicas: 3
+      labels:
+        swarm.autoscaler.enabled: "true"
+        swarm.autoscaler.min: "2"
+        swarm.autoscaler.max: "10"
+configs:
+  app:
+    file: cfg/app.conf
+secrets:
+  tls:
+    file: secrets/tls.crt
+`
+	remote := seedGitRepoFiles(t, "main", map[string][]byte{
+		"compose.yaml":    []byte(compose),
+		"cfg/app.conf":    []byte("config-v1"),
+		"secrets/tls.crt": []byte("ENCRYPTED-BLOB"),
+	})
+	src := gitadapter.New(t.TempDir(), map[string]model.RepoConfig{"r": {URL: remote}}, testLogger())
+	cap := &captureDeploy{ch: make(chan map[string]any, 1)}
+	deployer := stackdeploy.New(liveState{}, cap.fn(), testLogger())
+	sops := &worktreeSops{plaintext: map[string][]byte{"secrets/tls.crt": []byte("tls-plaintext")}}
+	st := []model.StackConfig{{Name: "mystack", Repo: "r", Branch: "main", ComposeFile: "compose.yaml", SopsSecretsDiscovery: true}}
+
+	tickSrc, _ := manualTicks()
+	loop := New(src, stackrender.New(testLogger()), deployer, sops, &fakeRec{}, st, "changed", false, true, testLogger(), WithTickSource(tickSrc))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = loop.Run(ctx, time.Hour); close(done) }()
+
+	var got map[string]any
+	select {
+	case got = <-cap.ch:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout: deploy never fired")
+	}
+	cancel()
+	<-done
+
+	services := got["services"].(map[string]any)
+	if r := replicasInt64(services, "web"); r != 7 {
+		t.Errorf("web replicas = %d, want 7 (carry-forward)", r)
+	}
+	cfgObj := got["configs"].(map[string]any)["app"].(map[string]any)
+	if cfgObj["name"] != "mystack-app-"+md5hash8([]byte("config-v1")) {
+		t.Errorf("config name = %v, want mystack-app-%s", cfgObj["name"], md5hash8([]byte("config-v1")))
+	}
+	secObj := got["secrets"].(map[string]any)["tls"].(map[string]any)
+	if secObj["name"] != "mystack-tls-"+md5hash8([]byte("tls-plaintext")) {
+		t.Errorf("secret name = %v, want mystack-tls-%s (decrypted content hashed)", secObj["name"], md5hash8([]byte("tls-plaintext")))
+	}
+}
+
+// TestGitOpsLoop_AutoRotateOff proves rotation is skipped when autoRotate=false.
+func TestGitOpsLoop_AutoRotateOff(t *testing.T) {
+	compose := `services:
+  web:
+    image: nginx
+    deploy:
+      replicas: 3
+configs:
+  app:
+    file: cfg/app.conf
+`
+	remote := seedGitRepoFiles(t, "main", map[string][]byte{
+		"compose.yaml": []byte(compose),
+		"cfg/app.conf": []byte("config-v1"),
+	})
+	src := gitadapter.New(t.TempDir(), map[string]model.RepoConfig{"r": {URL: remote}}, testLogger())
+	cap := &captureDeploy{ch: make(chan map[string]any, 1)}
+	deployer := stackdeploy.New(liveState{}, cap.fn(), testLogger())
+	st := []model.StackConfig{{Name: "mystack", Repo: "r", Branch: "main", ComposeFile: "compose.yaml"}}
+
+	tickSrc, _ := manualTicks()
+	loop := New(src, stackrender.New(testLogger()), deployer, nil, &fakeRec{}, st, "changed", false, false, testLogger(), WithTickSource(tickSrc))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = loop.Run(ctx, time.Hour); close(done) }()
+
+	var got map[string]any
+	select {
+	case got = <-cap.ch:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout: deploy never fired")
+	}
+	cancel()
+	<-done
+
+	cfgObj := got["configs"].(map[string]any)["app"].(map[string]any)
+	if _, has := cfgObj["name"]; has {
+		t.Errorf("autoRotate=false must not rename; got name=%v", cfgObj["name"])
+	}
 }
