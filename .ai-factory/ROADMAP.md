@@ -30,7 +30,7 @@
 - [ ] **Stack rendering pipeline** — read + parse compose, Go `text/template` rendering against a `values_file` (`Values`), producing the deployable stack map. *(parity: compose templating)*
 - [ ] **SOPS secrets + config/secret rotation** — age + gpg decryption (env-mounted keys), per-stack `sops_files`, automatic secret discovery from compose `secrets:` (global + per-stack, with plugin/external-secret exclusion), and `auto_rotate` config/secret rotation by content hash (`<stack>-<name>-<hash>` rename) so Swarm picks up changed content. *(parity: sops, discovery, rotation)*
 - [ ] **Autoscaler-aware stack deploy** — deploy via `docker stack deploy --with-registry-auth` with a configurable image pull policy (`always` / `changed`, global + per-stack). **The differentiator:** because the same project owns both sync and scale, it never overwrites `replicas` of any `swarm.autoscaler.*` service — the swarm-cd↔HPA conflict dissolves by construction (no carry-forward hack, no two-controller fight). Dry-run-aware and logged. *(parity: deploy, image pull policy + the HPA-aware win)*
-- [ ] **Concurrent scheduler & loop integration** — worker-pool concurrency (per-repo locking) and a configurable `update_interval`, integrated alongside the existing autoscale/heal reconcile loop and its single guarded mutation path. *(parity: concurrency, interval)*
+- [x] **Concurrent scheduler & loop integration** — worker-pool concurrency (per-repo locking) and a configurable `update_interval`, integrated alongside the existing autoscale/heal reconcile loop and its single guarded mutation path. *(parity: concurrency, interval)*
 - [ ] **Status, drift, web UI & API** — per-stack revision / last-error status, drift detection (live vs desired), `/metrics` for sync actions, and a `GET /stacks` JSON + static UI surface mirroring swarm-cd. *(parity: status API/UI + drift addition)*
 - [ ] **swarm-cd migration & docs** — config mapping / compatibility with `repos.yaml` + `stacks.yaml`, cut-over guide from m-adawi/swarm-cd, deploy example, and docs so the move is documented and reversible.
 
@@ -51,3 +51,4 @@
 | Packaging & deployment | 2026-07-01 |
 | Heal-only opt-in (v0.2.0) | 2026-07-01 |
 | Manager/Agent split + load-aware rebalancing (v0.3.0) | 2026-07-01 |
+| Concurrent scheduler & loop integration (v0.4.0) | 2026-07-03 |

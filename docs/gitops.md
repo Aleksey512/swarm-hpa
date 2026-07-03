@@ -70,6 +70,7 @@ Both files are read from the `--gitops-configs-path` directory (default `.`).
 | `--gitops-interval` | `GITOPS_INTERVAL` | `120s` | Stack-sync loop period. |
 | `--gitops-pull-policy` | `GITOPS_PULL_POLICY` | `always` | `--resolve-image` mode for `docker stack deploy`: `always` or `changed`. |
 | `--gitops-auto-rotate` | `GITOPS_AUTO_ROTATE` | `true` | Rename file-backed configs/secrets to `<stack>-<name>-<hash>` so Swarm picks up changed content (swarm-cd `auto_rotate`). |
+| `--gitops-concurrency` | `GITOPS_CONCURRENCY` | `4` | Max number of stacks synced in parallel. Stacks sharing a repo serialize, so effective parallelism is bounded by the number of distinct repos (`>= 1`). |
 
 The loop honors the global `--dry-run` / `DRY_RUN` flag (on by default).
 
@@ -140,6 +141,22 @@ to `<stack>-<name>-<content-hash>` (md5 of the decrypted content, first 8 hex)
 before deploy — so editing a config/secret in Git and syncing mints a new object
 and Swarm rolls it out. Disable with `--gitops-auto-rotate=false`.
 
+## Concurrency
+
+Each sync pass fans the configured stacks out across a **bounded worker pool** of
+`--gitops-concurrency` workers (default `4`, must be `>= 1`). Stacks on
+**different repos** sync in parallel; stacks that **share a repo serialize
+end-to-end**. The reason: every repo has a single on-disk worktree
+(`<repos-path>/<repo>`) that sops-decrypt and rotation mutate in place, so two
+stacks on the same repo would otherwise interleave and corrupt that shared
+worktree. Effective parallelism is therefore
+`min(--gitops-concurrency, number of distinct repos)`.
+
+This mirrors swarm-cd's per-repo concurrency model. Set `--gitops-concurrency=1`
+to reproduce fully-sequential sync (handy for debugging). A fault on one stack —
+a panic, a deploy error — never cancels the others; each stack is isolated and
+the loop continues.
+
 ## Migrating from swarm-cd
 
 1. Stop swarm-cd (its work is now done by swarm-hpa's manager).
@@ -151,13 +168,14 @@ and Swarm rolls it out. Disable with `--gitops-auto-rotate=false`.
 3. SOPS secret decryption and config/secret rotation are supported — set
    `SOPS_AGE_KEY_FILE` / `SOPS_GPG_*` and `sops_files` / `sops_secrets_discovery`
    exactly as you did for swarm-cd. Still pending in later v0.4.0 releases: the
-   web UI, status API, concurrency tuning, and drift detection.
+   web UI, status API, and drift detection.
 4. Start in dry-run, confirm the logged deploy intents and preserved replica
    counts, then disable dry-run.
 
 > v0.4.0 so far covers git sync, compose rendering, the autoscaler-aware deploy,
-> SOPS secret decryption, config/secret rotation, config loading, and the loop.
-> Concurrency tuning, the status/UI, and drift detection are follow-ups.
+> SOPS secret decryption, config/secret rotation, config loading, the loop, and
+> bounded worker-pool concurrency. The status/UI and drift detection are
+> follow-ups.
 
 ## Dry run
 

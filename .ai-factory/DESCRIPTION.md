@@ -54,7 +54,9 @@ services explicitly marked for management are acted upon. Transparency beats
   (clamped to `[min,max]`) before `docker stack deploy`. Drop-in `repos.yaml` /
   `stacks.yaml` compatibility; dry-run-aware; fully logged. SOPS secret decryption
   (age/gpg) and config/secret rotation by content hash reach full swarm-cd parity.
-  Opt-in, off by default.
+  Stacks sync on a bounded worker pool (`--gitops-concurrency`, default 4); stacks
+  sharing a repo serialize on their single shared on-disk worktree. Opt-in, off by
+  default.
 - **Scale stabilization** — cooldown windows and step limits to prevent
   flapping (separate scale-up / scale-down cooldowns, analogous to K8s HPA
   stabilization windows).

@@ -129,7 +129,10 @@ dependency rule is broken.
    autoscaled replicas, so it needs neither the cooldown nor the per-service gate.
    The loop's pipeline is render → sops-decrypt (in place) → rotate configs/secrets
    by content hash → carry-forward → deploy; decrypt is skipped in dry-run because
-   it writes plaintext to disk.
+   it writes plaintext to disk. Each tick fans stacks out across a bounded worker
+   pool (`--gitops-concurrency`); stacks that share a repo serialize end-to-end on
+   its single on-disk worktree (decrypt/rotation mutate it in place), so effective
+   parallelism is bounded by the number of distinct repos.
 
 ## Code Examples
 
