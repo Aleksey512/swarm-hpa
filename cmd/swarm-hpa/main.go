@@ -14,10 +14,14 @@ import (
 
 	"github.com/docker/docker/client"
 
+	"github.com/Aleksey512/swarm-hpa/internal/adapter/git"
 	"github.com/Aleksey512/swarm-hpa/internal/adapter/ingest"
 	"github.com/Aleksey512/swarm-hpa/internal/adapter/metrics"
 	"github.com/Aleksey512/swarm-hpa/internal/adapter/observability"
+	"github.com/Aleksey512/swarm-hpa/internal/adapter/stackdeploy"
+	"github.com/Aleksey512/swarm-hpa/internal/adapter/stackrender"
 	swarmadapter "github.com/Aleksey512/swarm-hpa/internal/adapter/swarm"
+	"github.com/Aleksey512/swarm-hpa/internal/app/gitopsync"
 	"github.com/Aleksey512/swarm-hpa/internal/app/registry"
 	"github.com/Aleksey512/swarm-hpa/internal/config"
 	"github.com/Aleksey512/swarm-hpa/internal/core/port"
@@ -127,6 +131,40 @@ func runManager(ctx context.Context, cfg config.Config, cli *client.Client, logg
 			logger.Error("ingest server failed", "err", err)
 		}
 	}()
+
+	// Optional GitOps stack-sync loop (replaces swarm-cd). Runs alongside the
+	// reconcile loop on the same ctx; deploys are autoscaler-aware (carry-forward
+	// preserves replicas of swarm.autoscaler.* services) and dry-run-gated.
+	if cfg.GitOpsEnabled {
+		repos, stacks, err := config.LoadGitOps(cfg.GitOpsConfigsPath)
+		if err != nil {
+			logger.Error("failed to load gitops stacks", "err", err)
+			return 1
+		}
+		if len(stacks) == 0 {
+			logger.Warn("gitops enabled but no stacks defined in stacks.yaml")
+		}
+		dockerCli, err := stackdeploy.NewDockerCli(logger)
+		if err != nil {
+			logger.Error("failed to initialize docker cli for gitops", "err", err)
+			return 1
+		}
+		deployer := stackdeploy.New(swarmCtl, stackdeploy.DockerCLIDeploy(dockerCli), logger)
+		gitLoop := gitopsync.New(
+			git.New(cfg.GitOpsReposPath, repos, logger),
+			stackrender.New(logger),
+			deployer, recorder, stacks,
+			cfg.GitOpsPullPolicy, cfg.DryRun, logger,
+		)
+		logger.Info("gitops enabled",
+			"stacks", len(stacks), "interval", cfg.GitOpsInterval,
+			"repos_path", cfg.GitOpsReposPath, "pull_policy", cfg.GitOpsPullPolicy, "dry_run", cfg.DryRun)
+		go func() {
+			if err := gitLoop.Run(ctx, cfg.GitOpsInterval); err != nil {
+				logger.Error("gitops loop failed", "err", err)
+			}
+		}()
+	}
 
 	rc := application.run(ctx)
 

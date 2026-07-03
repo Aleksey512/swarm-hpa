@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/docker/docker/api/types/filters"
@@ -35,8 +36,11 @@ type Adapter struct {
 	logger *slog.Logger
 }
 
-// compile-time proof the adapter satisfies the core port.
-var _ port.SwarmController = (*Adapter)(nil)
+// compile-time proof the adapter satisfies the core ports.
+var (
+	_ port.SwarmController  = (*Adapter)(nil)
+	_ port.StackStateReader = (*Adapter)(nil)
+)
 
 // New returns a read-only swarm adapter over the given Docker client.
 func New(cli *client.Client, logger *slog.Logger) *Adapter {
@@ -144,6 +148,46 @@ func (a *Adapter) Nodes(ctx context.Context) ([]model.NodeView, error) {
 		views = append(views, toNodeView(n))
 	}
 	return views, nil
+}
+
+// stackNamespaceLabel is the Docker label `docker stack deploy` sets on every
+// service of a stack, used to scope a live-services read to one stack.
+const stackNamespaceLabel = "com.docker.stack.namespace"
+
+// StackServices returns the live Swarm services of a stack (by the
+// com.docker.stack.namespace label) for autoscaler-aware carry-forward. It
+// implements port.StackStateReader. Name is the short compose service name
+// (Swarm stores the service as <stack>_<name>).
+func (a *Adapter) StackServices(ctx context.Context, stack string) ([]model.StackService, error) {
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+
+	f := filters.NewArgs(filters.Arg("label", stackNamespaceLabel+"="+stack))
+	services, err := a.cli.ServiceList(ctx, dswarm.ServiceListOptions{Filters: f})
+	if err != nil {
+		return nil, fmt.Errorf("service list (stack %s): %w", stack, err)
+	}
+
+	prefix := stack + "_"
+	out := make([]model.StackService, 0, len(services))
+	for _, svc := range services {
+		var replicas uint64
+		replicated := false
+		if svc.Spec.Mode.Replicated != nil {
+			replicated = true
+			if svc.Spec.Mode.Replicated.Replicas != nil {
+				replicas = *svc.Spec.Mode.Replicated.Replicas
+			}
+		}
+		out = append(out, model.StackService{
+			Name:       strings.TrimPrefix(svc.Spec.Name, prefix),
+			Replicas:   replicas,
+			Replicated: replicated,
+			Labels:     svc.Spec.Labels,
+		})
+	}
+	a.logger.Debug("stack services observed", "stack", stack, "count", len(out))
+	return out, nil
 }
 
 // toManagedService maps an SDK service to a model.ManagedService, parsing its

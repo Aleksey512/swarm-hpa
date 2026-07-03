@@ -99,6 +99,24 @@ type Config struct {
 	// actions on the same service (0 disables rate-limiting).
 	RebalanceCooldown time.Duration
 
+	// --- GitOps stack sync (manager-only; v0.4.0) ---
+
+	// GitOpsEnabled turns on the in-cluster GitOps stack-sync loop, which deploys
+	// stacks from Git and — being autoscaler-aware — never clobbers replicas of
+	// swarm.autoscaler.* services. Replaces the third-party swarm-cd dependency.
+	GitOpsEnabled bool
+	// GitOpsConfigsPath is the directory holding repos.yaml + stacks.yaml (the
+	// swarm-cd file format, for drop-in compatibility).
+	GitOpsConfigsPath string
+	// GitOpsReposPath is the root under which each repo is cloned at
+	// <GitOpsReposPath>/<repoName>.
+	GitOpsReposPath string
+	// GitOpsInterval is the stack-sync loop period.
+	GitOpsInterval time.Duration
+	// GitOpsPullPolicy is the --resolve-image mode passed to `docker stack
+	// deploy`: "always" (re-resolve every sync) or "changed".
+	GitOpsPullPolicy string
+
 	// --- Agent-only settings (ignored in manager mode) ---
 
 	// ManagerURL is the base URL of the manager's ingest endpoint (required in
@@ -131,7 +149,13 @@ func Default() Config {
 		AgentStaleTimeout:  45 * time.Second,
 		RebalanceThreshold: 0.30,
 		RebalanceCooldown:  10 * time.Minute,
-		ReportInterval:     15 * time.Second,
+
+		GitOpsConfigsPath: ".",
+		GitOpsReposPath:   "repos",
+		GitOpsInterval:    120 * time.Second,
+		GitOpsPullPolicy:  "always",
+
+		ReportInterval: 15 * time.Second,
 	}
 }
 
@@ -211,6 +235,19 @@ func (c Config) validateManager() error {
 	if c.RebalanceCooldown < 0 {
 		return fmt.Errorf("rebalance_cooldown must be >= 0, got %s", c.RebalanceCooldown)
 	}
+	if c.GitOpsEnabled {
+		if c.GitOpsInterval <= 0 {
+			return fmt.Errorf("gitops_interval must be > 0, got %s", c.GitOpsInterval)
+		}
+		if strings.TrimSpace(c.GitOpsConfigsPath) == "" {
+			return fmt.Errorf("gitops_configs_path must not be empty when gitops is enabled")
+		}
+		switch c.GitOpsPullPolicy {
+		case "always", "changed":
+		default:
+			return fmt.Errorf("gitops_pull_policy must be always|changed, got %q", c.GitOpsPullPolicy)
+		}
+	}
 	return nil
 }
 
@@ -256,6 +293,11 @@ func (c Config) LogValue() slog.Value {
 		slog.String("manager_url", redactURL(c.ManagerURL)),
 		slog.Duration("report_interval", c.ReportInterval),
 		slog.String("node_id", c.NodeID),
+		slog.Bool("gitops_enabled", c.GitOpsEnabled),
+		slog.String("gitops_configs_path", c.GitOpsConfigsPath),
+		slog.String("gitops_repos_path", c.GitOpsReposPath),
+		slog.Duration("gitops_interval", c.GitOpsInterval),
+		slog.String("gitops_pull_policy", c.GitOpsPullPolicy),
 	)
 }
 
@@ -410,6 +452,29 @@ func LoadArgs(args []string, lookupEnv func(string) (string, bool)) (Config, err
 	if v, ok := lookupEnv("NODE_ID"); ok {
 		c.NodeID = v
 	}
+	if v, ok := lookupEnv("GITOPS_ENABLED"); ok {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("env GITOPS_ENABLED=%q: %w", v, err)
+		}
+		c.GitOpsEnabled = b
+	}
+	if v, ok := lookupEnv("GITOPS_CONFIGS_PATH"); ok {
+		c.GitOpsConfigsPath = v
+	}
+	if v, ok := lookupEnv("GITOPS_REPOS_PATH"); ok {
+		c.GitOpsReposPath = v
+	}
+	if v, ok := lookupEnv("GITOPS_INTERVAL"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("env GITOPS_INTERVAL=%q: %w", v, err)
+		}
+		c.GitOpsInterval = d
+	}
+	if v, ok := lookupEnv("GITOPS_PULL_POLICY"); ok {
+		c.GitOpsPullPolicy = v
+	}
 
 	fs := flag.NewFlagSet("swarm-hpa", flag.ContinueOnError)
 	fs.SetOutput(io.Discard) // errors are returned, not printed
@@ -435,6 +500,11 @@ func LoadArgs(args []string, lookupEnv func(string) (string, bool)) (Config, err
 	managerURL := fs.String("manager-url", c.ManagerURL, "agent: base URL of the manager ingest endpoint (required in agent mode)")
 	reportInterval := fs.Duration("report-interval", c.ReportInterval, "agent: how often to collect and push a report")
 	nodeID := fs.String("node-id", c.NodeID, "agent: override the reported node ID (default: auto-detect from the local daemon)")
+	gitopsEnabled := fs.Bool("gitops", c.GitOpsEnabled, "manager: enable the in-cluster GitOps stack-sync loop (replaces swarm-cd; reads repos.yaml+stacks.yaml)")
+	gitopsConfigsPath := fs.String("gitops-configs-path", c.GitOpsConfigsPath, "manager: directory containing repos.yaml and stacks.yaml")
+	gitopsReposPath := fs.String("gitops-repos-path", c.GitOpsReposPath, "manager: root directory under which each repo is cloned")
+	gitopsInterval := fs.Duration("gitops-interval", c.GitOpsInterval, "manager: stack-sync loop interval")
+	gitopsPullPolicy := fs.String("gitops-pull-policy", c.GitOpsPullPolicy, "manager: image resolution mode for `docker stack deploy`: always|changed")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, fmt.Errorf("parse flags: %w", err)
@@ -462,6 +532,11 @@ func LoadArgs(args []string, lookupEnv func(string) (string, bool)) (Config, err
 	c.ManagerURL = *managerURL
 	c.ReportInterval = *reportInterval
 	c.NodeID = *nodeID
+	c.GitOpsEnabled = *gitopsEnabled
+	c.GitOpsConfigsPath = *gitopsConfigsPath
+	c.GitOpsReposPath = *gitopsReposPath
+	c.GitOpsInterval = *gitopsInterval
+	c.GitOpsPullPolicy = *gitopsPullPolicy
 
 	if err := c.Validate(); err != nil {
 		return Config{}, fmt.Errorf("invalid configuration: %w", err)

@@ -3,6 +3,7 @@ package observability
 import (
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -27,6 +28,13 @@ type Recorder struct {
 	rebalancesTotal *prometheus.CounterVec
 	suppressedTotal *prometheus.CounterVec
 	errorsTotal     *prometheus.CounterVec
+
+	// GitOps stack-sync metrics (v0.4.0).
+	syncsTotal          prometheus.Counter
+	deploysTotal        *prometheus.CounterVec
+	syncSuppressedTotal *prometheus.CounterVec
+	syncErrorsTotal     *prometheus.CounterVec
+	lastSyncTimestamp   *prometheus.GaugeVec
 
 	// Agent-fleet metrics (populated on the manager as agents report in).
 	agentsConnected     prometheus.Gauge
@@ -81,6 +89,28 @@ func NewRecorder(version string, logger *slog.Logger) *Recorder {
 			Namespace: metricNamespace, Name: "errors_total",
 			Help: "Recoverable errors, by pipeline stage.",
 		}, []string{"stage"}),
+
+		syncsTotal: f.NewCounter(prometheus.CounterOpts{
+			Namespace: metricNamespace, Name: "sync_total",
+			Help: "Number of completed GitOps stack-sync passes.",
+		}),
+		deploysTotal: f.NewCounterVec(prometheus.CounterOpts{
+			Namespace: metricNamespace, Name: "deploys_total",
+			Help: "Stack deploys applied, by stack.",
+		}, []string{"stack"}),
+		syncSuppressedTotal: f.NewCounterVec(prometheus.CounterOpts{
+			Namespace: metricNamespace, Name: "sync_suppressed_total",
+			Help: "Intended stack deploys not applied, by reason.",
+		}, []string{"reason"}),
+		syncErrorsTotal: f.NewCounterVec(prometheus.CounterOpts{
+			Namespace: metricNamespace, Name: "sync_errors_total",
+			Help: "Recoverable GitOps errors, by stage.",
+		}, []string{"stage"}),
+		lastSyncTimestamp: f.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: metricNamespace, Name: "last_sync_timestamp_seconds",
+			Help: "Unix timestamp of the last successful sync per stack.",
+		}, []string{"stack"}),
+
 		agentsConnected: f.NewGauge(prometheus.GaugeOpts{
 			Namespace: metricNamespace, Name: "agents_connected",
 			Help: "Live agents currently reporting to the manager.",
@@ -101,6 +131,7 @@ func NewRecorder(version string, logger *slog.Logger) *Recorder {
 			Namespace: metricNamespace, Name: "node_mem_pct",
 			Help: "Latest reported node memory utilization (0..100), by node.",
 		}, []string{"node"}),
+
 		logger: logger,
 	}
 
@@ -148,6 +179,35 @@ func (r *Recorder) ActionSuppressed(action, reason string) {
 // Error increments the recoverable-error counter for the given pipeline stage.
 func (r *Recorder) Error(stage string) {
 	r.errorsTotal.WithLabelValues(stage).Inc()
+}
+
+// --- GitOps stack-sync events (v0.4.0) ---
+
+// SyncRun increments the completed-sync-pass counter.
+func (r *Recorder) SyncRun() { r.syncsTotal.Inc() }
+
+// DeployApplied increments the applied-deploys counter for the stack.
+func (r *Recorder) DeployApplied(stack string) {
+	r.deploysTotal.WithLabelValues(stack).Inc()
+}
+
+// SyncSuppressed increments the sync-suppressed counter, labeled by reason.
+func (r *Recorder) SyncSuppressed(reason string) {
+	r.syncSuppressedTotal.WithLabelValues(reason).Inc()
+}
+
+// SyncError increments the GitOps error counter for the given stage.
+func (r *Recorder) SyncError(stage string) {
+	r.syncErrorsTotal.WithLabelValues(stage).Inc()
+}
+
+// LastRevision records a stack's current Git revision. The revision is logged but
+// deliberately NOT used as a metric label (unbounded cardinality — every commit
+// would mint a new label value); instead the per-stack last-successful-sync
+// timestamp gauge is refreshed.
+func (r *Recorder) LastRevision(stack, revision string) {
+	r.lastSyncTimestamp.WithLabelValues(stack).Set(float64(time.Now().Unix()))
+	r.logger.Debug("gitops: stack revision", "stack", stack, "revision", revision)
 }
 
 // --- agent-fleet events (satisfies app/registry.Recorder) ---

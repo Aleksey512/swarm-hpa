@@ -34,6 +34,13 @@ func (f *fakeRecorder) ActionSuppressed(action, reason string) {
 }
 func (f *fakeRecorder) Error(stage string) { f.errors = append(f.errors, stage) }
 
+// GitOps stack-sync events (v0.4.0) — no-op for the reconciler tests.
+func (f *fakeRecorder) SyncRun()                    {}
+func (f *fakeRecorder) DeployApplied(string)        {}
+func (f *fakeRecorder) SyncSuppressed(string)       {}
+func (f *fakeRecorder) SyncError(string)            {}
+func (f *fakeRecorder) LastRevision(string, string) {}
+
 func contains(ss []string, s string) bool {
 	for _, x := range ss {
 		if x == s {
