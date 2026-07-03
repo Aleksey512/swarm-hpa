@@ -1,17 +1,20 @@
 // Package gitopsync runs the periodic GitOps stack-sync control loop. It is a
 // peer of app/reconciler and folds GitOps into the manager process: each tick it
-// syncs stacks from Git, renders compose, and deploys — but only when Git
-// actually changed (the autoscaler owns the replica count in between). A deploy
-// is dry-run-gated and carries autoscaled replicas forward (see adapter/stackdeploy),
+// syncs stacks from Git, renders compose, decrypts sops secrets, rotates
+// configs/secrets by content hash, and deploys — but only when Git actually
+// changed (the autoscaler owns the replica count in between). A deploy is
+// dry-run-gated and carries autoscaled replicas forward (see adapter/stackdeploy),
 // so the GitOps reapply never clobbers a count the autoscaler set.
 package gitopsync
 
 import (
 	"context"
 	"log/slog"
+	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/Aleksey512/swarm-hpa/internal/core/compose"
 	"github.com/Aleksey512/swarm-hpa/internal/core/model"
 	"github.com/Aleksey512/swarm-hpa/internal/core/port"
 )
@@ -38,10 +41,12 @@ type Loop struct {
 	git        port.GitSource
 	renderer   port.StackRenderer
 	deployer   port.StackDeployer
+	sops       port.SecretDecrypter
 	recorder   port.Recorder
 	stacks     []model.StackConfig
 	pullPolicy string
 	dryRun     bool
+	autoRotate bool
 	logger     *slog.Logger
 
 	tickSource TickSource
@@ -54,16 +59,19 @@ type Loop struct {
 	lastDeployedOK  map[string]bool
 }
 
-// New constructs the loop. A nil recorder falls back to no-op, a nil logger to
-// slog.Default. opts (e.g. WithTickSource) are applied last.
+// New constructs the loop. sops decrypts secret files in place (nil disables
+// decrypt). A nil recorder falls back to no-op, a nil logger to slog.Default.
+// opts (e.g. WithTickSource) are applied last.
 func New(
 	git port.GitSource,
 	renderer port.StackRenderer,
 	deployer port.StackDeployer,
+	sops port.SecretDecrypter,
 	recorder port.Recorder,
 	stacks []model.StackConfig,
 	pullPolicy string,
 	dryRun bool,
+	autoRotate bool,
 	logger *slog.Logger,
 	opts ...Option,
 ) *Loop {
@@ -77,10 +85,12 @@ func New(
 		git:             git,
 		renderer:        renderer,
 		deployer:        deployer,
+		sops:            sops,
 		recorder:        recorder,
 		stacks:          stacks,
 		pullPolicy:      pullPolicy,
 		dryRun:          dryRun,
+		autoRotate:      autoRotate,
 		logger:          logger,
 		tickSource:      defaultTickSource,
 		lastDeployedRev: make(map[string]string),
@@ -97,7 +107,8 @@ func New(
 // loop or the other stacks.
 func (l *Loop) Run(ctx context.Context, interval time.Duration) error {
 	l.logger.Info("gitops loop started",
-		"interval", interval, "stacks", len(l.stacks), "dry_run", l.dryRun, "pull_policy", l.pullPolicy)
+		"interval", interval, "stacks", len(l.stacks), "dry_run", l.dryRun,
+		"pull_policy", l.pullPolicy, "auto_rotate", l.autoRotate)
 	if l.customTick {
 		l.logger.Debug("custom tick source injected (non-default)")
 	}
@@ -164,21 +175,55 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 			return
 		}
 	}
-	compose, err := l.renderer.Render(composeBytes, valuesBytes)
+	composeMap, err := l.renderer.Render(composeBytes, valuesBytes)
 	if err != nil {
 		log.Error("gitops: render failed", "err", err)
 		l.recorder.SyncError("render")
 		return
 	}
 
+	// Dry-run short-circuits BEFORE decrypt: decrypt writes plaintext to disk (a
+	// side effect), so dry-run must not prepare or deploy.
 	if l.dryRun {
-		log.Info("gitops: dry-run; would deploy stack", "revision", rev)
+		log.Info("gitops: dry-run; would decrypt/rotate/deploy stack", "revision", rev)
 		l.recorder.SyncSuppressed("dry_run")
 		return
 	}
 
+	// Decrypt sops-encrypted secret files in place (no-op when none; skipped when
+	// no decrypter is wired).
+	sopsFiles := st.SopsFiles
+	if st.SopsSecretsDiscovery {
+		if sopsFiles, err = compose.DiscoverSecretFiles(composeMap, filepath.Dir(st.ComposeFile)); err != nil {
+			log.Error("gitops: secret discovery failed", "err", err)
+			l.recorder.SyncError("secrets")
+			return
+		}
+	}
+	if l.sops != nil && len(sopsFiles) > 0 {
+		log.Debug("gitops: decrypting sops files", "count", len(sopsFiles))
+		if err := l.sops.Decrypt(ctx, l.git.WorktreePath(st), sopsFiles); err != nil {
+			log.Error("gitops: sops decrypt failed", "err", err)
+			l.recorder.SyncError("secrets")
+			return
+		}
+	}
+
+	// Rotate file-backed configs/secrets by content hash so Swarm picks up changes
+	// (no-op when autoRotate is disabled).
+	if l.autoRotate {
+		resolver := func(rel string) ([]byte, error) { return l.git.ReadFile(ctx, st, rel) }
+		if n, rerr := compose.ApplyRotation(composeMap, st.Name, filepath.Dir(st.ComposeFile), resolver); rerr != nil {
+			log.Error("gitops: rotation failed", "err", rerr)
+			l.recorder.SyncError("rotate")
+			return
+		} else if n > 0 {
+			log.Debug("gitops: rotated objects", "count", n)
+		}
+	}
+
 	log.Info("gitops: deploying stack", "revision", rev)
-	if err := l.deployer.Deploy(ctx, st.Name, compose, port.DeployOpts{PullPolicy: l.pullPolicy}); err != nil {
+	if err := l.deployer.Deploy(ctx, st.Name, composeMap, port.DeployOpts{PullPolicy: l.pullPolicy}); err != nil {
 		log.Error("gitops: deploy failed", "err", err)
 		l.recorder.SyncError("deploy")
 		l.markDeploy(st.Name, rev, false)

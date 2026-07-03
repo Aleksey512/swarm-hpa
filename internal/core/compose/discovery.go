@@ -1,4 +1,10 @@
-package stackdeploy
+// Package compose holds the pure compose-map transforms shared by the GitOps
+// pipeline: secret discovery (which files a stack's secrets reference) and
+// config/secret rotation (rename file-backed objects by content hash). It is
+// pure — stdlib only, no Docker/git/label imports — so both the app layer
+// (gitopsync) and the deploy adapter can depend on it without crossing the
+// ports-and-adapters boundary.
+package compose
 
 import (
 	"fmt"

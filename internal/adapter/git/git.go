@@ -111,6 +111,11 @@ func (a *Adapter) Sync(ctx context.Context, stack model.StackConfig) (string, er
 	return revision, nil
 }
 
+// WorktreePath returns the on-disk root of the stack's repo worktree.
+func (a *Adapter) WorktreePath(stack model.StackConfig) string {
+	return filepath.Join(a.reposPath, stack.Repo)
+}
+
 // ReadFile returns the bytes of relPath from the repo's worktree. Sync must have
 // been called first so the repo is cloned and on the right branch.
 func (a *Adapter) ReadFile(ctx context.Context, stack model.StackConfig, relPath string) ([]byte, error) {

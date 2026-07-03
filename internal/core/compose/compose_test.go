@@ -1,4 +1,4 @@
-package stackdeploy
+package compose
 
 import (
 	"errors"
@@ -23,7 +23,6 @@ func TestDiscoverSecretFiles(t *testing.T) {
 		"key": map[string]any{"file": "secrets/tls.key"},
 		"ext": map[string]any{"external": true}, // no file → skipped
 	}}
-	// compose at "stack/compose.yaml" → dir "stack"
 	got, err := DiscoverSecretFiles(compose, "stack")
 	if err != nil {
 		t.Fatalf("DiscoverSecretFiles: %v", err)
@@ -79,18 +78,18 @@ func TestApplyRotation_RenamesByContentHash(t *testing.T) {
 }
 
 func TestApplyRotation_StableAndChangedHash(t *testing.T) {
-	mk := func(content string) map[string]any {
+	mk := func() map[string]any {
 		return map[string]any{"configs": map[string]any{"app": map[string]any{"file": "app.conf"}}}
 	}
 	files := contentResolver(map[string][]byte{filepath.Join("", "app.conf"): []byte("X")})
 
-	a := mk("X")
+	a := mk()
 	if _, err := ApplyRotation(a, "s", "", files); err != nil {
 		t.Fatal(err)
 	}
 	name1 := a["configs"].(map[string]any)["app"].(map[string]any)["name"]
 
-	b := mk("X")
+	b := mk()
 	if _, err := ApplyRotation(b, "s", "", files); err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +99,7 @@ func TestApplyRotation_StableAndChangedHash(t *testing.T) {
 	}
 
 	filesChanged := contentResolver(map[string][]byte{filepath.Join("", "app.conf"): []byte("Y")})
-	c := mk("Y")
+	c := mk()
 	if _, err := ApplyRotation(c, "s", "", filesChanged); err != nil {
 		t.Fatal(err)
 	}

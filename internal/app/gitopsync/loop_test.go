@@ -44,6 +44,8 @@ func (f *fakeGit) ReadFile(_ context.Context, _ model.StackConfig, p string) ([]
 	return f.files[p], nil
 }
 
+func (f *fakeGit) WorktreePath(_ model.StackConfig) string { return "/tmp/fake-worktree" }
+
 type fakeRenderer struct{}
 
 func (fakeRenderer) Render(_, _ []byte) (map[string]any, error) {
@@ -79,6 +81,29 @@ func (f *fakeDeployer) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.calls
+}
+
+// fakeSops records the file lists it was asked to decrypt.
+type fakeSops struct {
+	mu    sync.Mutex
+	calls [][]string
+}
+
+func (f *fakeSops) Decrypt(_ context.Context, _ string, files []string) error {
+	f.mu.Lock()
+	f.calls = append(f.calls, files)
+	f.mu.Unlock()
+	return nil
+}
+
+func (f *fakeSops) totalFiles() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, c := range f.calls {
+		n += len(c)
+	}
+	return n
 }
 
 type fakeRec struct {
@@ -120,7 +145,7 @@ func TestLoop_NewRevisionDeploysThenSkips(t *testing.T) {
 	git := &fakeGit{revs: []string{"aaa", "bbb"}, files: map[string][]byte{"compose.yaml": []byte("services:\n")}}
 	dep := newFakeDeployer(nil)
 	src, tick := manualTicks()
-	l := New(git, fakeRenderer{}, dep, &fakeRec{}, stacks("s", "compose.yaml"), "changed", false, testLogger(), WithTickSource(src))
+	l := New(git, fakeRenderer{}, dep, nil, &fakeRec{}, stacks("s", "compose.yaml"), "changed", false, false, testLogger(), WithTickSource(src))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -131,7 +156,6 @@ func TestLoop_NewRevisionDeploysThenSkips(t *testing.T) {
 	<-dep.ch           // rev bbb → deploy #2
 	tick <- time.Now() // rev bbb again → unchanged → skip
 
-	// No third deploy: confirm by waiting briefly.
 	select {
 	case <-dep.ch:
 		t.Fatal("expected no third deploy on unchanged revision")
@@ -145,12 +169,15 @@ func TestLoop_NewRevisionDeploysThenSkips(t *testing.T) {
 	<-done
 }
 
-func TestLoop_DryRunSkipsDeploy(t *testing.T) {
+func TestLoop_DryRunSkipsPrepareAndDeploy(t *testing.T) {
 	git := &fakeGit{revs: []string{"aaa"}, files: map[string][]byte{"compose.yaml": []byte("services:\n")}}
 	dep := newFakeDeployer(nil)
+	sops := &fakeSops{}
 	rec := &fakeRec{}
 	src, tick := manualTicks()
-	l := New(git, fakeRenderer{}, dep, rec, stacks("s", "compose.yaml"), "changed", true, testLogger(), WithTickSource(src))
+	// Stack with sops files + autoRotate on — dry-run must skip decrypt/rotate/deploy.
+	st := []model.StackConfig{{Name: "s", Repo: "r", Branch: "main", ComposeFile: "compose.yaml", SopsFiles: []string{"secrets/tls.crt"}}}
+	l := New(git, fakeRenderer{}, dep, sops, rec, st, "changed", true, true, testLogger(), WithTickSource(src))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -164,10 +191,34 @@ func TestLoop_DryRunSkipsDeploy(t *testing.T) {
 	if c := dep.callCount(); c != 0 {
 		t.Fatalf("dry-run must not deploy; call count = %d", c)
 	}
+	if sops.totalFiles() != 0 {
+		t.Fatalf("dry-run must not decrypt; decrypted %d files", sops.totalFiles())
+	}
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
 	if rec.suppressed == 0 {
 		t.Fatal("expected SyncSuppressed recorded in dry-run")
+	}
+}
+
+func TestLoop_SopsDecryptTriggered(t *testing.T) {
+	git := &fakeGit{revs: []string{"aaa"}, files: map[string][]byte{"compose.yaml": []byte("services:\n")}}
+	dep := newFakeDeployer(nil)
+	sops := &fakeSops{}
+	st := []model.StackConfig{{Name: "s", Repo: "r", Branch: "main", ComposeFile: "compose.yaml", SopsFiles: []string{"secrets/a.yaml", "secrets/b.yaml"}}}
+	src, _ := manualTicks()
+	l := New(git, fakeRenderer{}, dep, sops, &fakeRec{}, st, "changed", false, false, testLogger(), WithTickSource(src))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = l.Run(ctx, time.Hour); close(done) }()
+
+	<-dep.ch // deploy runs after decrypt
+	cancel()
+	<-done
+
+	if got, want := sops.totalFiles(), 2; got != want {
+		t.Fatalf("sops decrypted %d files, want %d", got, want)
 	}
 }
 
@@ -176,10 +227,11 @@ func TestLoop_DeployErrorRetriesAtSameRevision(t *testing.T) {
 	dep := newFakeDeployer([]error{errors.New("transient deploy failure"), nil}) // fail then succeed
 	rec := &fakeRec{}
 	src, tick := manualTicks()
-	l := New(git, fakeRenderer{}, dep, rec, stacks("s", "compose.yaml"), "changed", false, testLogger(), WithTickSource(src))
+	l := New(git, fakeRenderer{}, dep, nil, rec, stacks("s", "compose.yaml"), "changed", false, false, testLogger(), WithTickSource(src))
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go func() { _ = l.Run(ctx, time.Hour) }()
+	done := make(chan struct{})
+	go func() { _ = l.Run(ctx, time.Hour); close(done) }()
 
 	<-dep.ch // rev aaa → deploy fails (ok=false)
 	tick <- time.Now()
@@ -194,6 +246,7 @@ func TestLoop_DeployErrorRetriesAtSameRevision(t *testing.T) {
 		t.Fatalf("expected a 'deploy' SyncError, got %v", rec.syncErrs)
 	}
 	cancel()
+	<-done
 }
 
 func TestLoop_GitSyncErrorStopsBeforeRender(t *testing.T) {
@@ -201,7 +254,7 @@ func TestLoop_GitSyncErrorStopsBeforeRender(t *testing.T) {
 	dep := newFakeDeployer(nil)
 	rec := &fakeRec{}
 	src, _ := manualTicks()
-	l := New(git, fakeRenderer{}, dep, rec, stacks("s", "compose.yaml"), "changed", false, testLogger(), WithTickSource(src))
+	l := New(git, fakeRenderer{}, dep, nil, rec, stacks("s", "compose.yaml"), "changed", false, false, testLogger(), WithTickSource(src))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -229,7 +282,7 @@ func TestLoop_GitSyncErrorStopsBeforeRender(t *testing.T) {
 func TestLoop_CancelStops(t *testing.T) {
 	src, _ := manualTicks()
 	l := New(&fakeGit{revs: []string{"aaa"}, files: map[string][]byte{"compose.yaml": []byte("services:\n")}},
-		fakeRenderer{}, newFakeDeployer(nil), &fakeRec{}, stacks("s", "compose.yaml"), "changed", false, testLogger(), WithTickSource(src))
+		fakeRenderer{}, newFakeDeployer(nil), nil, &fakeRec{}, stacks("s", "compose.yaml"), "changed", false, false, testLogger(), WithTickSource(src))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})

@@ -18,6 +18,7 @@ import (
 	"github.com/Aleksey512/swarm-hpa/internal/adapter/ingest"
 	"github.com/Aleksey512/swarm-hpa/internal/adapter/metrics"
 	"github.com/Aleksey512/swarm-hpa/internal/adapter/observability"
+	"github.com/Aleksey512/swarm-hpa/internal/adapter/sops"
 	"github.com/Aleksey512/swarm-hpa/internal/adapter/stackdeploy"
 	"github.com/Aleksey512/swarm-hpa/internal/adapter/stackrender"
 	swarmadapter "github.com/Aleksey512/swarm-hpa/internal/adapter/swarm"
@@ -153,12 +154,21 @@ func runManager(ctx context.Context, cfg config.Config, cli *client.Client, logg
 		gitLoop := gitopsync.New(
 			git.New(cfg.GitOpsReposPath, repos, logger),
 			stackrender.New(logger),
-			deployer, recorder, stacks,
-			cfg.GitOpsPullPolicy, cfg.DryRun, logger,
+			deployer,
+			sops.New(logger),
+			recorder, stacks,
+			cfg.GitOpsPullPolicy, cfg.DryRun, cfg.GitOpsAutoRotate, logger,
 		)
+		sopsStacks := 0
+		for _, s := range stacks {
+			if s.SopsSecretsDiscovery || len(s.SopsFiles) > 0 {
+				sopsStacks++
+			}
+		}
 		logger.Info("gitops enabled",
 			"stacks", len(stacks), "interval", cfg.GitOpsInterval,
-			"repos_path", cfg.GitOpsReposPath, "pull_policy", cfg.GitOpsPullPolicy, "dry_run", cfg.DryRun)
+			"repos_path", cfg.GitOpsReposPath, "pull_policy", cfg.GitOpsPullPolicy,
+			"dry_run", cfg.DryRun, "auto_rotate", cfg.GitOpsAutoRotate, "sops_stacks", sopsStacks)
 		go func() {
 			if err := gitLoop.Run(ctx, cfg.GitOpsInterval); err != nil {
 				logger.Error("gitops loop failed", "err", err)

@@ -1,4 +1,4 @@
-package stackdeploy
+package compose
 
 import (
 	"crypto/md5" //nolint:gosec // G501: md5 is a content-addressing hash for rotation object names, not a security primitive (swarm-cd parity)

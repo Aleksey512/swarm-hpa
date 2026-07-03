@@ -18,6 +18,11 @@ type GitSource interface {
 	// (a compose file or a values file). relPath is interpreted relative to the
 	// repo root, matching the compose_file / values_file in the stack config.
 	ReadFile(ctx context.Context, stack model.StackConfig, relPath string) ([]byte, error)
+
+	// WorktreePath returns the on-disk root of the stack's repo worktree
+	// (repos_path/<repo>), for callers that need real file paths (e.g. in-place
+	// sops decrypt).
+	WorktreePath(stack model.StackConfig) string
 }
 
 // StackRenderer turns raw compose bytes — optionally a Go text/template rendered

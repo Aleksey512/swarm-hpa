@@ -38,9 +38,9 @@
   `internal/adapter/stackdeploy/discovery.go` (`getFileObjects`, `DiscoverSecretFiles`) + `rotation.go` (`RotateObjects` / `ApplyRotation` — md5 content → `<stack>-<name>-<hash>` rename; pure via injected file resolver). Tests: discovery (map+list forms), rotation rename + stable/changed hash, non-file objects untouched.
 
 ### Phase 1 — Pipeline + wiring
-- [ ] **M3-T4 — Integrate decrypt+rotation into the loop** *(blocked by: T2, T3)*
+- [x] **M3-T4 — Integrate decrypt+rotation into the loop** *(done; decrypt+rotation stages in syncStack, dry-run skips prepare, GitSource.WorktreePath; pure transforms moved to core/compose so app doesn't import adapter)*
   `port.GitSource.WorktreePath(stack)` + git adapter impl. `loop.go`: after Render, resolve sops files (discovery OR `SopsFiles`), `Decrypt` then `ApplyRotation` (when `autoRotate`), each error → `SyncError` + continue; dry-run skips prepare (logs intent). `New` gains `sopsDecrypter` + `autoRotate` params. Files: `core/port/gitops.go`, `adapter/git/git.go`, `app/gitopsync/loop.go`, `loop_test.go`.
-- [ ] **M3-T5 — Wire into runManager** *(blocked by: T4)*
+- [x] **M3-T5 — Wire into runManager** *(done; sops.New + GitOpsAutoRotate threaded into gitopsync.New; startup log: auto_rotate + sops_stacks; build/vet/test/lint green)*
   `cmd/swarm-hpa/main.go` (--gitops block): `sops.New(logger)` + pass `autoRotate` into `gitopsync.New`; startup INFO log (sops stacks count, auto_rotate). Finalize `New` signature + update tests. Verify build+`-race`.
 
 ### Phase 2 — Hardening & docs
