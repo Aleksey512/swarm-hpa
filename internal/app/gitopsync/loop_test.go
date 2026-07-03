@@ -149,7 +149,7 @@ func TestLoop_NewRevisionDeploysThenSkips(t *testing.T) {
 	git := &fakeGit{revs: []string{"aaa", "bbb"}, files: map[string][]byte{"compose.yaml": []byte("services:\n")}}
 	dep := newFakeDeployer(nil)
 	src, tick := manualTicks()
-	l := New(git, fakeRenderer{}, dep, nil, &fakeRec{}, stacks("s", "compose.yaml"), "changed", false, false, 1, testLogger(), WithTickSource(src))
+	l := New(git, fakeRenderer{}, dep, nil, &fakeRec{}, nil, stacks("s", "compose.yaml"), "changed", false, false, 1, testLogger(), WithTickSource(src))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -181,7 +181,7 @@ func TestLoop_DryRunSkipsPrepareAndDeploy(t *testing.T) {
 	src, tick := manualTicks()
 	// Stack with sops files + autoRotate on — dry-run must skip decrypt/rotate/deploy.
 	st := []model.StackConfig{{Name: "s", Repo: "r", Branch: "main", ComposeFile: "compose.yaml", SopsFiles: []string{"secrets/tls.crt"}}}
-	l := New(git, fakeRenderer{}, dep, sops, rec, st, "changed", true, true, 1, testLogger(), WithTickSource(src))
+	l := New(git, fakeRenderer{}, dep, sops, rec, nil, st, "changed", true, true, 1, testLogger(), WithTickSource(src))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -211,7 +211,7 @@ func TestLoop_SopsDecryptTriggered(t *testing.T) {
 	sops := &fakeSops{}
 	st := []model.StackConfig{{Name: "s", Repo: "r", Branch: "main", ComposeFile: "compose.yaml", SopsFiles: []string{"secrets/a.yaml", "secrets/b.yaml"}}}
 	src, _ := manualTicks()
-	l := New(git, fakeRenderer{}, dep, sops, &fakeRec{}, st, "changed", false, false, 1, testLogger(), WithTickSource(src))
+	l := New(git, fakeRenderer{}, dep, sops, &fakeRec{}, nil, st, "changed", false, false, 1, testLogger(), WithTickSource(src))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -231,7 +231,7 @@ func TestLoop_DeployErrorRetriesAtSameRevision(t *testing.T) {
 	dep := newFakeDeployer([]error{errors.New("transient deploy failure"), nil}) // fail then succeed
 	rec := &fakeRec{}
 	src, tick := manualTicks()
-	l := New(git, fakeRenderer{}, dep, nil, rec, stacks("s", "compose.yaml"), "changed", false, false, 1, testLogger(), WithTickSource(src))
+	l := New(git, fakeRenderer{}, dep, nil, rec, nil, stacks("s", "compose.yaml"), "changed", false, false, 1, testLogger(), WithTickSource(src))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -258,7 +258,7 @@ func TestLoop_GitSyncErrorStopsBeforeRender(t *testing.T) {
 	dep := newFakeDeployer(nil)
 	rec := &fakeRec{}
 	src, _ := manualTicks()
-	l := New(git, fakeRenderer{}, dep, nil, rec, stacks("s", "compose.yaml"), "changed", false, false, 1, testLogger(), WithTickSource(src))
+	l := New(git, fakeRenderer{}, dep, nil, rec, nil, stacks("s", "compose.yaml"), "changed", false, false, 1, testLogger(), WithTickSource(src))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -286,7 +286,7 @@ func TestLoop_GitSyncErrorStopsBeforeRender(t *testing.T) {
 func TestLoop_CancelStops(t *testing.T) {
 	src, _ := manualTicks()
 	l := New(&fakeGit{revs: []string{"aaa"}, files: map[string][]byte{"compose.yaml": []byte("services:\n")}},
-		fakeRenderer{}, newFakeDeployer(nil), nil, &fakeRec{}, stacks("s", "compose.yaml"), "changed", false, false, 1, testLogger(), WithTickSource(src))
+		fakeRenderer{}, newFakeDeployer(nil), nil, &fakeRec{}, nil, stacks("s", "compose.yaml"), "changed", false, false, 1, testLogger(), WithTickSource(src))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -395,7 +395,7 @@ func TestSyncAll_ConcurrencyBound(t *testing.T) {
 		dep := &trackingDeployer{repoOf: repoOf, repoInflight: map[string]int{}, overlap: map[string]bool{}, block: 15 * time.Millisecond}
 		git := &fakeGit{revs: []string{"aaa"}, files: files}
 		src, _ := manualTicks()
-		l := New(git, fakeRenderer{}, dep, nil, &fakeRec{}, st, "changed", false, false, 2, testLogger(), WithTickSource(src))
+		l := New(git, fakeRenderer{}, dep, nil, &fakeRec{}, nil, st, "changed", false, false, 2, testLogger(), WithTickSource(src))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan struct{})
@@ -421,7 +421,7 @@ func TestSyncAll_ConcurrencyBound(t *testing.T) {
 		dep := &trackingDeployer{repoOf: repoOf, repoInflight: map[string]int{}, overlap: map[string]bool{}, block: 15 * time.Millisecond}
 		git := &fakeGit{revs: []string{"aaa"}, files: files}
 		src, _ := manualTicks()
-		l := New(git, fakeRenderer{}, dep, nil, &fakeRec{}, st, "changed", false, false, 1, testLogger(), WithTickSource(src))
+		l := New(git, fakeRenderer{}, dep, nil, &fakeRec{}, nil, st, "changed", false, false, 1, testLogger(), WithTickSource(src))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan struct{})
@@ -460,7 +460,7 @@ func TestSyncAll_PerRepoSerialization(t *testing.T) {
 	}
 	git := &fakeGit{revs: []string{"aaa"}, files: files}
 	src, _ := manualTicks()
-	l := New(git, fakeRenderer{}, dep, nil, &fakeRec{}, st, "changed", false, false, 3, testLogger(), WithTickSource(src))
+	l := New(git, fakeRenderer{}, dep, nil, &fakeRec{}, nil, st, "changed", false, false, 3, testLogger(), WithTickSource(src))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -495,7 +495,7 @@ func TestSyncAll_OneFailureDoesNotStopOthers(t *testing.T) {
 	rec := &fakeRec{}
 	git := &fakeGit{revs: []string{"aaa"}, files: files}
 	src, _ := manualTicks()
-	l := New(git, fakeRenderer{}, dep, nil, rec, st, "changed", false, false, 3, testLogger(), WithTickSource(src))
+	l := New(git, fakeRenderer{}, dep, nil, rec, nil, st, "changed", false, false, 3, testLogger(), WithTickSource(src))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -532,7 +532,7 @@ func TestNew_ConcurrencyClamped(t *testing.T) {
 		git := &fakeGit{revs: []string{"aaa"}, files: map[string][]byte{"compose.yaml": []byte("services:\n")}}
 		dep := &trackingDeployer{repoInflight: map[string]int{}, overlap: map[string]bool{}}
 		src, _ := manualTicks()
-		l := New(git, fakeRenderer{}, dep, nil, &fakeRec{}, st, "changed", false, false, n, testLogger(), WithTickSource(src))
+		l := New(git, fakeRenderer{}, dep, nil, &fakeRec{}, nil, st, "changed", false, false, n, testLogger(), WithTickSource(src))
 		if l.concurrency != 1 {
 			t.Errorf("concurrency=%d should clamp to 1, got %d", n, l.concurrency)
 		}
@@ -545,5 +545,127 @@ func TestNew_ConcurrencyClamped(t *testing.T) {
 		}
 		cancel()
 		<-done
+	}
+}
+
+// --- status store integration ---
+
+// fakeStatusStore is a minimal port.StackStatusStore for asserting what the loop
+// records.
+type fakeStatusStore struct {
+	mu       sync.Mutex
+	statuses map[string]model.StackStatus
+}
+
+func newFakeStatusStore() *fakeStatusStore {
+	return &fakeStatusStore{statuses: map[string]model.StackStatus{}}
+}
+
+func (f *fakeStatusStore) SetStatus(name string, s model.StackStatus) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s.Name = name
+	f.statuses[name] = s
+}
+
+func (f *fakeStatusStore) Snapshot() []model.StackStatus {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]model.StackStatus, 0, len(f.statuses))
+	for _, s := range f.statuses {
+		out = append(out, s)
+	}
+	return out
+}
+
+func (f *fakeStatusStore) get(name string) (model.StackStatus, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s, ok := f.statuses[name]
+	return s, ok
+}
+
+// statusRenderer returns a fixed compose map: web (autoscaled, replicas 3),
+// worker (plain, replicas 2), agent (global) — to exercise desiredReplicas
+// exclusion without parsing YAML in the fake.
+type statusRenderer struct{}
+
+func (statusRenderer) Render(_, _ []byte) (map[string]any, error) {
+	return map[string]any{"services": map[string]any{
+		"web":    map[string]any{"deploy": map[string]any{"replicas": 3, "labels": map[string]any{"swarm.autoscaler.enabled": "true"}}},
+		"worker": map[string]any{"deploy": map[string]any{"replicas": 2}},
+		"agent":  map[string]any{"deploy": map[string]any{"mode": "global"}},
+	}}, nil
+}
+
+func waitForStatus(t *testing.T, store *fakeStatusStore, name string) model.StackStatus {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if s, ok := store.get(name); ok {
+			return s
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("status for %q never written", name)
+	return model.StackStatus{}
+}
+
+func TestLoop_WritesSuccessStatus(t *testing.T) {
+	git := &fakeGit{revs: []string{"aaa"}, files: map[string][]byte{"compose.yaml": []byte("services:\n")}}
+	dep := newFakeDeployer(nil)
+	store := newFakeStatusStore()
+	src, _ := manualTicks()
+	st := []model.StackConfig{{Name: "s", Repo: "r", Branch: "main", ComposeFile: "compose.yaml"}}
+	l := New(git, statusRenderer{}, dep, nil, &fakeRec{}, store, st, "changed", false, false, 1, testLogger(), WithTickSource(src))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = l.Run(ctx, time.Hour); close(done) }()
+	<-dep.ch // deploy fires
+	got := waitForStatus(t, store, "s")
+	cancel()
+	<-done
+
+	if !got.OK {
+		t.Errorf("OK=false, want true; stage=%q msg=%q", got.ErrorStage, got.ErrorMessage)
+	}
+	if got.Revision != "aaa" {
+		t.Errorf("Revision=%q want aaa", got.Revision)
+	}
+	if got.DeployCount != 1 {
+		t.Errorf("DeployCount=%d want 1", got.DeployCount)
+	}
+	// DesiredReplicas: worker=2 only (web autoscaled excluded, agent global excluded).
+	if got.DesiredReplicas["worker"] != 2 {
+		t.Errorf("DesiredReplicas[worker]=%d want 2; full=%v", got.DesiredReplicas["worker"], got.DesiredReplicas)
+	}
+	if _, present := got.DesiredReplicas["web"]; present {
+		t.Errorf("autoscaled web must be excluded from DesiredReplicas; got %v", got.DesiredReplicas)
+	}
+	if _, present := got.DesiredReplicas["agent"]; present {
+		t.Errorf("global agent must be excluded from DesiredReplicas; got %v", got.DesiredReplicas)
+	}
+}
+
+func TestLoop_WritesFailureStatus(t *testing.T) {
+	git := &fakeGit{err: errors.New("boom"), files: map[string][]byte{}}
+	dep := newFakeDeployer(nil)
+	store := newFakeStatusStore()
+	src, _ := manualTicks()
+	l := New(git, fakeRenderer{}, dep, nil, &fakeRec{}, store, stacks("s", "compose.yaml"), "changed", false, false, 1, testLogger(), WithTickSource(src))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = l.Run(ctx, time.Hour); close(done) }()
+	got := waitForStatus(t, store, "s")
+	cancel()
+	<-done
+
+	if got.OK {
+		t.Error("OK=true, want false on git failure")
+	}
+	if got.ErrorStage != "git" {
+		t.Errorf("ErrorStage=%q want git", got.ErrorStage)
 	}
 }

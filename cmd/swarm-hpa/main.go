@@ -156,7 +156,7 @@ func runManager(ctx context.Context, cfg config.Config, cli *client.Client, logg
 			stackrender.New(logger),
 			deployer,
 			sops.New(logger),
-			recorder, stacks,
+			recorder, nil, stacks,
 			cfg.GitOpsPullPolicy, cfg.DryRun, cfg.GitOpsAutoRotate, cfg.GitOpsConcurrency, logger,
 		)
 		sopsStacks := 0

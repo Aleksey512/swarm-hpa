@@ -9,11 +9,14 @@ package gitopsync
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/Aleksey512/swarm-hpa/internal/config"
 	"github.com/Aleksey512/swarm-hpa/internal/core/compose"
 	"github.com/Aleksey512/swarm-hpa/internal/core/model"
 	"github.com/Aleksey512/swarm-hpa/internal/core/port"
@@ -38,25 +41,30 @@ func WithTickSource(src TickSource) Option {
 
 // Loop is the GitOps stack-sync control loop.
 type Loop struct {
-	git        port.GitSource
-	renderer   port.StackRenderer
-	deployer   port.StackDeployer
-	sops       port.SecretDecrypter
-	recorder   port.Recorder
-	stacks     []model.StackConfig
-	pullPolicy string
-	dryRun     bool
-	autoRotate bool
-	logger     *slog.Logger
+	git         port.GitSource
+	renderer    port.StackRenderer
+	deployer    port.StackDeployer
+	sops        port.SecretDecrypter
+	recorder    port.Recorder
+	statusStore port.StackStatusStore // nil → status tracking disabled (tests)
+	stacks      []model.StackConfig
+	pullPolicy  string
+	dryRun      bool
+	autoRotate  bool
+	logger      *slog.Logger
 
 	tickSource TickSource
 	customTick bool
 
 	// lastDeployed tracks per-stack progress so we skip a deploy when Git is
 	// unchanged AND the last deploy succeeded (retrying when it failed).
+	// lastDesired is the per-stack non-autoscaled replica snapshot from the last
+	// render (fed to the drift check); deployCount counts successful deploys.
 	mu              sync.Mutex
 	lastDeployedRev map[string]string
 	lastDeployedOK  map[string]bool
+	lastDesired     map[string]map[string]uint64
+	deployCount     map[string]uint64
 
 	// concurrency caps how many syncStack goroutines run at once. repoLocks
 	// serializes stacks that share a repo end-to-end (one on-disk worktree per
@@ -68,13 +76,15 @@ type Loop struct {
 
 // New constructs the loop. sops decrypts secret files in place (nil disables
 // decrypt). A nil recorder falls back to no-op, a nil logger to slog.Default.
-// opts (e.g. WithTickSource) are applied last.
+// statusStore receives the per-stack status the GET /stacks API reads (nil
+// disables status tracking). opts (e.g. WithTickSource) are applied last.
 func New(
 	git port.GitSource,
 	renderer port.StackRenderer,
 	deployer port.StackDeployer,
 	sops port.SecretDecrypter,
 	recorder port.Recorder,
+	statusStore port.StackStatusStore,
 	stacks []model.StackConfig,
 	pullPolicy string,
 	dryRun bool,
@@ -98,6 +108,7 @@ func New(
 		deployer:        deployer,
 		sops:            sops,
 		recorder:        recorder,
+		statusStore:     statusStore,
 		stacks:          stacks,
 		pullPolicy:      pullPolicy,
 		dryRun:          dryRun,
@@ -107,6 +118,8 @@ func New(
 		tickSource:      defaultTickSource,
 		lastDeployedRev: make(map[string]string),
 		lastDeployedOK:  make(map[string]bool),
+		lastDesired:     make(map[string]map[string]uint64),
+		deployCount:     make(map[string]uint64),
 		repoLocks:       make(map[string]*sync.Mutex),
 	}
 	for _, opt := range opts {
@@ -167,13 +180,22 @@ func (l *Loop) syncAll(ctx context.Context) {
 }
 
 // syncStack syncs a single stack end-to-end. It recovers from panics so one bad
-// stack never kills the loop.
+// stack never kills the loop, and records the outcome (revision, failing stage,
+// desired-replica snapshot) into the status store for the GET /stacks API.
 func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
+	var (
+		rev      string
+		stage    string // "" = no error this pass; otherwise the failing stage
+		errMsg   string
+		deployed bool
+	)
 	defer func() {
 		if r := recover(); r != nil {
 			l.logger.Error("gitops: panic syncing stack; continuing", "stack", st.Name, "panic", r)
 			l.recorder.SyncError("sync")
+			stage, errMsg = "sync", fmt.Sprintf("panic: %v", r)
 		}
+		l.recordStatus(st.Name, rev, stage, errMsg, deployed)
 	}()
 	log := l.logger.With(slog.String("stack", st.Name))
 
@@ -186,16 +208,19 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 	defer unlock()
 	log.Debug("gitops: acquired repo lock", "repo", st.Repo)
 
-	rev, err := l.git.Sync(ctx, st)
+	r, err := l.git.Sync(ctx, st)
 	if err != nil {
 		log.Error("gitops: git sync failed", "err", err)
 		l.recorder.SyncError("git")
+		stage, errMsg = "git", err.Error()
 		return
 	}
+	rev = r
 	l.recorder.LastRevision(st.Name, rev)
 
 	if l.unchangedSinceLastSuccess(st.Name, rev) {
 		log.Debug("gitops: no changes; skipping deploy", "revision", rev)
+		deployed = true // already deployed at this rev with a prior success
 		return
 	}
 
@@ -203,6 +228,7 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 	if err != nil {
 		log.Error("gitops: read compose failed", "err", err)
 		l.recorder.SyncError("render")
+		stage, errMsg = "render", err.Error()
 		return
 	}
 	var valuesBytes []byte
@@ -211,6 +237,7 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 		if err != nil {
 			log.Error("gitops: read values failed", "err", err)
 			l.recorder.SyncError("render")
+			stage, errMsg = "render", err.Error()
 			return
 		}
 	}
@@ -218,8 +245,12 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 	if err != nil {
 		log.Error("gitops: render failed", "err", err)
 		l.recorder.SyncError("render")
+		stage, errMsg = "render", err.Error()
 		return
 	}
+	// Snapshot the non-autoscaled, non-global desired replicas for the drift
+	// check (computed only on a successful render; stable across unchanged skips).
+	l.setDesired(st.Name, desiredReplicas(composeMap))
 
 	// Dry-run short-circuits BEFORE decrypt: decrypt writes plaintext to disk (a
 	// side effect), so dry-run must not prepare or deploy.
@@ -236,6 +267,7 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 		if sopsFiles, err = compose.DiscoverSecretFiles(composeMap, filepath.Dir(st.ComposeFile)); err != nil {
 			log.Error("gitops: secret discovery failed", "err", err)
 			l.recorder.SyncError("secrets")
+			stage, errMsg = "secrets", err.Error()
 			return
 		}
 	}
@@ -244,6 +276,7 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 		if err := l.sops.Decrypt(ctx, l.git.WorktreePath(st), sopsFiles); err != nil {
 			log.Error("gitops: sops decrypt failed", "err", err)
 			l.recorder.SyncError("secrets")
+			stage, errMsg = "secrets", err.Error()
 			return
 		}
 	}
@@ -255,6 +288,7 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 		if n, rerr := compose.ApplyRotation(composeMap, st.Name, filepath.Dir(st.ComposeFile), resolver); rerr != nil {
 			log.Error("gitops: rotation failed", "err", rerr)
 			l.recorder.SyncError("rotate")
+			stage, errMsg = "rotate", rerr.Error()
 			return
 		} else if n > 0 {
 			log.Debug("gitops: rotated objects", "count", n)
@@ -266,10 +300,13 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 		log.Error("gitops: deploy failed", "err", err)
 		l.recorder.SyncError("deploy")
 		l.markDeploy(st.Name, rev, false)
+		stage, errMsg = "deploy", err.Error()
 		return
 	}
 	l.recorder.DeployApplied(st.Name)
 	l.markDeploy(st.Name, rev, true)
+	l.incDeploy(st.Name)
+	deployed = true
 	log.Info("gitops: stack synced", "revision", rev)
 }
 
@@ -287,6 +324,164 @@ func (l *Loop) markDeploy(name, rev string, ok bool) {
 	defer l.mu.Unlock()
 	l.lastDeployedRev[name] = rev
 	l.lastDeployedOK[name] = ok
+}
+
+// setDesired caches the per-stack desired-replica snapshot from the last render.
+func (l *Loop) setDesired(name string, desired map[string]uint64) {
+	l.mu.Lock()
+	l.lastDesired[name] = desired
+	l.mu.Unlock()
+}
+
+// incDeploy bumps the per-stack successful-deploy counter.
+func (l *Loop) incDeploy(name string) {
+	l.mu.Lock()
+	l.deployCount[name]++
+	l.mu.Unlock()
+}
+
+// recordStatus writes the per-stack outcome to the status store (no-op when no
+// store is wired). OK is true when no stage failed this pass. DesiredReplicas and
+// DeployCount come from the cached counters so they stay stable on unchanged
+// skips (which skip render/deploy).
+func (l *Loop) recordStatus(name, rev, stage, errMsg string, deployed bool) {
+	if l.statusStore == nil {
+		return
+	}
+	l.mu.Lock()
+	desired := l.lastDesired[name]
+	count := l.deployCount[name]
+	l.mu.Unlock()
+
+	l.statusStore.SetStatus(name, model.StackStatus{
+		Name:            name,
+		Revision:        rev,
+		OK:              stage == "",
+		ErrorStage:      stage,
+		ErrorMessage:    errMsg,
+		LastSync:        time.Now(),
+		DeployCount:     count,
+		DesiredReplicas: desired,
+	})
+	l.logger.Debug("gitops: status updated", "stack", name, "ok", stage == "", "stage", stage)
+}
+
+// desiredReplicas returns the non-autoscaled, non-global service→replica snapshot
+// from a rendered compose map, for drift detection. Autoscaled services
+// (swarm.autoscaler.enabled=true) and global-mode services are excluded — their
+// replica divergence is intentional, not drift. Services without an explicit
+// replicas count are skipped (unknown desired). Mirrors the detection in
+// adapter/stackdeploy/carryforward.go (kept private per package; not shared across
+// the app→adapter boundary).
+func desiredReplicas(compose map[string]any) map[string]uint64 {
+	services, ok := compose["services"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	out := make(map[string]uint64)
+	for name, raw := range services {
+		svc, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if isGlobalService(svc) {
+			continue
+		}
+		if labelIsTrue(svc, config.LabelEnabled) {
+			continue // autoscaler-owned: the HPA controls its replicas
+		}
+		replicas, ok := replicasOf(svc)
+		if !ok {
+			continue
+		}
+		out[name] = replicas
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// isGlobalService reports whether a compose service is mode: global (top-level or
+// under deploy:). Mirrors adapter/stackdeploy.isGlobalMode.
+func isGlobalService(svc map[string]any) bool {
+	if d, ok := svc["deploy"].(map[string]any); ok {
+		if m, _ := d["mode"].(string); m == "global" {
+			return true
+		}
+	}
+	if m, _ := svc["mode"].(string); m == "global" {
+		return true
+	}
+	return false
+}
+
+// labelIsTrue reports whether the given compose label is "true", looking under
+// deploy.labels then the service's top-level labels, in either the map or the list
+// (- "key=value") form. Mirrors adapter/stackdeploy.serviceLabels for one key.
+func labelIsTrue(svc map[string]any, key string) bool {
+	if d, ok := svc["deploy"].(map[string]any); ok {
+		if readLabel(d["labels"], key) == "true" {
+			return true
+		}
+	}
+	return readLabel(svc["labels"], key) == "true"
+}
+
+// readLabel reads one key from a compose labels value (map or list form); "" if
+// absent.
+func readLabel(labels any, key string) string {
+	switch t := labels.(type) {
+	case map[string]any:
+		if v, ok := t[key]; ok {
+			return fmt.Sprint(v)
+		}
+	case []any:
+		for _, item := range t {
+			s := fmt.Sprint(item)
+			if k, v, ok := strings.Cut(s, "="); ok && k == key {
+				return v
+			}
+		}
+	}
+	return ""
+}
+
+// replicasOf reads a compose service's replica count from deploy.replicas, falling
+// back to a top-level replicas field. ok is false when unset (unknown desired).
+func replicasOf(svc map[string]any) (uint64, bool) {
+	if d, ok := svc["deploy"].(map[string]any); ok {
+		if r, ok := asUint64(d["replicas"]); ok {
+			return r, true
+		}
+	}
+	return asUint64(svc["replicas"])
+}
+
+// asUint64 coerces a YAML-decoded number (int/int64/uint64/float64) to uint64.
+// Negative values are rejected (replicas can't be negative) so the signed→unsigned
+// conversions below are safe.
+func asUint64(v any) (uint64, bool) {
+	switch n := v.(type) {
+	case int:
+		if n < 0 {
+			return 0, false
+		}
+		return uint64(n), true //nolint:gosec // G115: guarded against negative
+	case int64:
+		if n < 0 {
+			return 0, false
+		}
+		return uint64(n), true //nolint:gosec // G115: guarded against negative
+	case uint64:
+		return n, true
+	case float64:
+		if n < 0 {
+			return 0, false
+		}
+		return uint64(n), true //nolint:gosec // G115: guarded against negative
+	}
+	return 0, false
 }
 
 // acquireRepoLock locks the per-repo mutex (allocating it lazily on first use)

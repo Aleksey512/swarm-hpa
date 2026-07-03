@@ -133,7 +133,7 @@ func TestGitOpsLoop_CarryForwardEndToEnd(t *testing.T) {
 	deployer := stackdeploy.New(liveState{}, cap.fn(), testLogger())
 
 	tickSrc, _ := manualTicks()
-	loop := New(src, renderer, deployer, nil, &fakeRec{}, stacks("mystack", "compose.yaml"), "changed", false, false, 1, testLogger(), WithTickSource(tickSrc))
+	loop := New(src, renderer, deployer, nil, &fakeRec{}, nil, stacks("mystack", "compose.yaml"), "changed", false, false, 1, testLogger(), WithTickSource(tickSrc))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -171,7 +171,7 @@ func TestGitOpsLoop_DryRunDoesNotDeploy(t *testing.T) {
 	rec := &fakeRec{}
 
 	tickSrc, tick := manualTicks()
-	loop := New(src, renderer, deployer, nil, rec, stacks("mystack", "compose.yaml"), "changed", true, false, 1, testLogger(), WithTickSource(tickSrc))
+	loop := New(src, renderer, deployer, nil, rec, nil, stacks("mystack", "compose.yaml"), "changed", true, false, 1, testLogger(), WithTickSource(tickSrc))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -280,7 +280,7 @@ secrets:
 	st := []model.StackConfig{{Name: "mystack", Repo: "r", Branch: "main", ComposeFile: "compose.yaml", SopsSecretsDiscovery: true}}
 
 	tickSrc, _ := manualTicks()
-	loop := New(src, stackrender.New(testLogger()), deployer, sops, &fakeRec{}, st, "changed", false, true, 1, testLogger(), WithTickSource(tickSrc))
+	loop := New(src, stackrender.New(testLogger()), deployer, sops, &fakeRec{}, nil, st, "changed", false, true, 1, testLogger(), WithTickSource(tickSrc))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -330,7 +330,7 @@ configs:
 	st := []model.StackConfig{{Name: "mystack", Repo: "r", Branch: "main", ComposeFile: "compose.yaml"}}
 
 	tickSrc, _ := manualTicks()
-	loop := New(src, stackrender.New(testLogger()), deployer, nil, &fakeRec{}, st, "changed", false, false, 1, testLogger(), WithTickSource(tickSrc))
+	loop := New(src, stackrender.New(testLogger()), deployer, nil, &fakeRec{}, nil, st, "changed", false, false, 1, testLogger(), WithTickSource(tickSrc))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -451,7 +451,7 @@ func TestGitOpsLoop_ConcurrentSyncAcrossRepos(t *testing.T) {
 		st := newOverlapState()
 		deployer := stackdeploy.New(liveState{}, overlapDeployFn(repoOf, 50*time.Millisecond, st), testLogger())
 		tickSrc, _ := manualTicks()
-		loop := New(src, stackrender.New(testLogger()), deployer, nil, &fakeRec{}, stacksCfg,
+		loop := New(src, stackrender.New(testLogger()), deployer, nil, &fakeRec{}, nil, stacksCfg,
 			"changed", false, false, concurrency, testLogger(), WithTickSource(tickSrc))
 
 		ctx, cancel := context.WithCancel(context.Background())
