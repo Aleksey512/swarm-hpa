@@ -57,6 +57,7 @@ skill). Module path is illustrative.
 │   ├── adapter/                   # ── INFRASTRUCTURE (adapters implement core ports) ──
 │   │   ├── swarm/                 # Docker SDK adapter → implements port.SwarmController
 │   │   ├── statsutil/             # Shared Docker container-stats CPU/mem computations
+│   │   ├── dockererr/             # Shared Docker/Swarm error classification (IsVersionConflict) — used by swarm + stackdeploy
 │   │   ├── agent/
 │   │   │   ├── collector/         # Agent: samples the LOCAL node → model.AgentReport
 │   │   │   └── reporter/          # Agent: HTTP push of reports to the manager
