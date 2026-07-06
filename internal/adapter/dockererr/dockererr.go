@@ -23,6 +23,7 @@ func IsVersionConflict(err error) bool {
 	if err == nil {
 		return false
 	}
+	//nolint:staticcheck // errdefs.IsConflict matches the pinned Docker SDK v28.5.2; SA1019 suggests containerd cerrdefs, which this module does not import.
 	if errdefs.IsConflict(err) {
 		return true
 	}
