@@ -1,0 +1,44 @@
+# compose.yaml — the demo app deployed by the swarm-hpa GitOps loop.
+# =============================================================================
+# This is the stack swarm-hpa pulls from the local git repo (see ../README.md)
+# and deploys as the `demoapp` stack. It has two services ON PURPOSE:
+#
+#   web   — opt-in AUTOSCALED (swarm.autoscaler.enabled=true). This is the one
+#           carry-forward protects: a `docker stack deploy` must NOT reset the
+#           replica count the autoscaler — or you, simulating it — just set.
+#   cache — a PLAIN replicated service (no autoscaler labels). This is the one
+#           the drift surface (GET /stacks) tracks and a sync reconciles to the
+#           `replicas:` value below.
+#
+# CRITICAL (same trap as the other examples): the swarm.autoscaler.* labels live
+# under `deploy.labels` (SERVICE labels), NOT under a top-level `labels:` key on
+# the service (those are CONTAINER labels, which the daemon never reads). A
+# service labelled in the wrong place is silently never managed.
+# =============================================================================
+version: "3.8"
+
+services:
+  # web — autoscaled. Carry-forward keeps its live replicas across a sync.
+  web:
+    image: traefik/whoami
+    deploy:
+      mode: replicated
+      replicas: 2 # compose-owned baseline; carry-forward overrides this on deploy
+      labels:
+        swarm.autoscaler.enabled: "true" # hard opt-in — unlabelled services are untouched
+        swarm.autoscaler.min: "2" # never scale below this (also the carry-forward floor)
+        swarm.autoscaler.max: "8" # never scale above this (carry-forward clamps live to it)
+        swarm.autoscaler.metric: "cpu" # cpu | memory (Docker stats provider)
+        swarm.autoscaler.target: "20" # target avg CPU %
+      # A CPU limit so per-task CPU% is meaningful (matches the cpu-autoscale example).
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 64M
+
+  # cache — plain. A sync resets it to replicas:2; drift appears if you change it.
+  cache:
+    image: redis:7-alpine
+    deploy:
+      mode: replicated
+      replicas: 2

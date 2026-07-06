@@ -1,0 +1,3 @@
+# editor / OS noise — keep the demo repo clean
+.DS_Store
+*.log

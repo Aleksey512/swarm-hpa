@@ -1,0 +1,20 @@
+# repos.yaml — one entry per Git repository (drop-in swarm-cd format).
+# =============================================================================
+# swarm-hpa's GitOps loop clones each repo under --gitops-repos-path and deploys
+# the stacks that reference it (see stacks.yaml). Full field reference:
+#   ../../docs/gitops.md
+#
+# Fields (all snake_case, matching swarm-cd for drop-in compatibility):
+#   url           required — Git URL (HTTPS, or file:// for a local repo).
+#   username      optional — HTTP basic auth username (private repos).
+#   password      optional — HTTP basic auth password / token.
+#   password_file optional — path to a file whose first line is the token.
+#
+# The `url` below is a PLACEHOLDER. Either:
+#   - run `bash examples/gitops/init-repo.sh` — it fills in the absolute file://
+#     path to this example's app-repo (offline, self-contained), or
+#   - point it at a real remote, e.g. `url: https://github.com/org/my-app.git`.
+#     Public repos need no auth; private repos add username + password|password_file.
+# =============================================================================
+demoapp:
+  url: file:///ABSOLUTE/PATH/TO/examples/gitops/app-repo

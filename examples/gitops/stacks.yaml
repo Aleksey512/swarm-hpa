@@ -1,0 +1,17 @@
+# stacks.yaml — one entry per stack (drop-in swarm-cd format).
+# =============================================================================
+# The key is the Swarm stack namespace swarm-hpa deploys as
+# (`docker stack deploy demoapp`). Each stack points at a repo (key in
+# repos.yaml), a branch, and a repo-relative compose file. Full field reference:
+#   ../../docs/gitops.md
+#
+# Scope of THIS example: carry-forward + drift only. It deliberately omits:
+#   values_file            — compose templating ({{ .Values.* }})
+#   sops_files             — sops-encrypted secrets to decrypt before deploy
+#   sops_secrets_discovery — auto-discover sops files from compose `secrets:`
+# Both are documented in ../../docs/gitops.md.
+# =============================================================================
+demoapp:
+  repo: demoapp
+  branch: main
+  compose_file: compose.yaml
