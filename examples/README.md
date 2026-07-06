@@ -5,8 +5,10 @@
 Runnable, self-contained demos of what swarm-hpa does: single-node CPU
 autoscaling, Prometheus-driven autoscaling, stuck-task healing, and — via the
 v0.3.0 manager/agent fleet — cluster-wide autoscaling and load-aware
-rebalancing. Each example deploys a **target workload**; you run the daemon
-alongside it (or, for the agents demo, inside the cluster) and watch it decide.
+rebalancing. There is also a GitOps stack-sync demo (§5). Each example deploys a
+**target workload**; you run the daemon alongside it (or, for the agents demo,
+inside the cluster; or, for the GitOps demo, the daemon deploys the workload
+from git) and watch it decide.
 
 | Example | Demonstrates | Provider |
 |---------|--------------|----------|
@@ -14,6 +16,7 @@ alongside it (or, for the agents demo, inside the cluster) and watch it decide.
 | [`prometheus-autoscale/`](prometheus-autoscale/) | Scale on requests/sec per replica | Prometheus (PromQL) |
 | [`healer/`](healer/) | Recover a task stuck `pending` after a node recovers | — |
 | [`agents/`](agents/) | Cluster-wide autoscaling + load-aware rebalancing | Agents (fleet) |
+| [`gitops/`](gitops/) | Deploy a stack from Git without clobbering autoscaled replicas (carry-forward) + drift view | — |
 
 ## The one rule that trips everyone up
 
@@ -159,6 +162,31 @@ active nodes with a real CPU skew; it force-updates the **whole** service
 (re-cycles all replicas — Swarm has no targeted task-move), so it is opt-in,
 dry-run by default, and behind a long cooldown. Tear down: `docker stack rm agents`.
 
+## 5. GitOps stack sync ([`gitops/`](gitops/))
+
+Deploys a two-service stack **from a local git repo** and shows the GitOps
+differentiator: because the same process owns the autoscaler, a sync never
+resets a replica count the autoscaler set (**carry-forward**). A read-only drift
+view is served at `GET /stacks`.
+
+```bash
+bash examples/gitops/init-repo.sh        # make app-repo a git source + resolve repos.yaml
+make run ARGS="--gitops --gitops-configs-path=examples/gitops --gitops-repos-path=/tmp/swarm-hpa-repos --log-level=debug"   # dry-run: watch sync intent
+```
+
+Expected (dry-run):
+
+```
+msg="gitops: dry-run; would decrypt/rotate/deploy stack" stack=demoapp revision=<rev>
+```
+
+Enable real sync with `--dry-run=false`, then watch `demoapp_web` keep its
+replica count across a sync (carry-forward) and `demoapp_cache` report drift at
+`http://localhost:9095/stacks`. A single-node swarm is enough; this demo (like
+§4) is different — the daemon deploys the workload from git, so there is no
+manual `docker stack deploy`. Full walkthrough + the carry-forward/drift steps:
+[`gitops/README.md`](gitops/README.md). Tear down: `docker stack rm demoapp`.
+
 ---
 
 ## Safety & teardown
@@ -166,7 +194,7 @@ dry-run by default, and behind a long cooldown. Tear down: `docker stack rm agen
 - Everything is **dry-run until `--dry-run=false`** — the daemon logs `would …`
   and touches nothing.
 - Only services carrying `swarm.autoscaler.enabled=true` are ever considered.
-- Remove a demo with `docker stack rm <stack>` (`demo`, `promdemo`, `healer`, `agents`).
+- Remove a demo with `docker stack rm <stack>` (`demo`, `promdemo`, `healer`, `agents`, `demoapp`).
 
 ## See also
 

@@ -191,6 +191,40 @@ func TestLoadGitOps_SwarmCDCompat(t *testing.T) {
 	}
 }
 
+// TestLoadGitOps_ExampleConfigs guards the shipped example configs against schema
+// rot: the repos.yaml + stacks.yaml under examples/gitops must parse via
+// LoadGitOps with the documented field mapping. LoadGitOps does not hit the
+// network or check that the repo path exists, so the shipped placeholder URL is
+// fine. If the example or the config struct drifts, this test fails.
+// See examples/gitops/README.md.
+func TestLoadGitOps_ExampleConfigs(t *testing.T) {
+	dir := filepath.Join("..", "..", "examples", "gitops")
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("examples/gitops not found (cwd issue?): %v", err)
+	}
+
+	repos, stacks, err := LoadGitOps(dir)
+	if err != nil {
+		t.Fatalf("LoadGitOps(examples/gitops): %v", err)
+	}
+	if len(stacks) != 1 {
+		t.Fatalf("got %d stacks, want 1", len(stacks))
+	}
+
+	r, ok := repos["demoapp"]
+	if !ok {
+		t.Fatalf("repos missing %q", "demoapp")
+	}
+	if r.URL == "" {
+		t.Errorf("demoapp repo URL is empty; want a non-empty file:// or remote URL")
+	}
+
+	s := stacks[0]
+	if s.Name != "demoapp" || s.Repo != "demoapp" || s.Branch != "main" || s.ComposeFile != "compose.yaml" {
+		t.Errorf("example stack mapping mismatch: %+v", s)
+	}
+}
+
 func TestLoadArgsCooldown(t *testing.T) {
 	// env over default
 	c, err := LoadArgs(nil, fakeEnv(map[string]string{"COOLDOWN": "45s"}))

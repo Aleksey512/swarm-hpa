@@ -34,6 +34,9 @@ The manager now pulls `my-app` on `main`, renders `compose.yaml`, and deploys th
 `web` stack every `--gitops-interval` (default 120s). Services marked
 `swarm.autoscaler.enabled=true` keep their autoscaled replica count across syncs.
 
+For a complete, self-contained demo (local git repo + carry-forward + drift at
+`GET /stacks`), see [`examples/gitops/`](../examples/gitops/).
+
 ## Configuration
 
 ### Files (drop-in swarm-cd format)
