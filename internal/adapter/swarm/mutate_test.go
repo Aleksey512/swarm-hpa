@@ -49,6 +49,27 @@ func TestAdapterScaleRetriesOnConflict(t *testing.T) {
 	}
 }
 
+func TestAdapterScaleRetriesOnUpdateOutOfSequence(t *testing.T) {
+	// The real error Swarm emits on a concurrent ServiceUpdate arrives as gRPC
+	// code=Unknown and is not classified as an errdefs.Conflict — so the bare
+	// IsConflict check used to fail fast here. IsVersionConflict must catch it.
+	fake := &fakeDockerAPI{
+		inspect:    replicatedInspect(2),
+		updateErrs: []error{errors.New("rpc error: code = Unknown desc = update out of sequence")}, // 1st out-of-sequence, 2nd succeeds
+	}
+	a := &Adapter{cli: fake, logger: discardLogger()}
+
+	if err := a.Scale(context.Background(), "s1", 4); err != nil {
+		t.Fatalf("expected retry to succeed, got %v", err)
+	}
+	if fake.updateCalls != 2 {
+		t.Errorf("want 2 ServiceUpdate calls (out-of-sequence + success), got %d", fake.updateCalls)
+	}
+	if fake.inspectCalls != 2 {
+		t.Errorf("want 2 inspects (re-inspect before retry), got %d", fake.inspectCalls)
+	}
+}
+
 func TestAdapterScaleNonReplicatedErrors(t *testing.T) {
 	fake := &fakeDockerAPI{inspect: dswarm.Service{ID: "g"}} // no Replicated mode
 	a := &Adapter{cli: fake, logger: discardLogger()}
