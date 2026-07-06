@@ -296,7 +296,14 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 	}
 
 	log.Info("gitops: deploying stack", "revision", rev)
-	if err := l.deployer.Deploy(ctx, st.Name, composeMap, port.DeployOpts{PullPolicy: l.pullPolicy}); err != nil {
+	// Co-locate the temp compose with the source compose file so the relative
+	// configs:/secrets: paths inside it resolve against the same directory they
+	// resolve against for the original file (the worktree), not /tmp.
+	composeDir := filepath.Join(l.git.WorktreePath(st), filepath.Dir(st.ComposeFile))
+	if err := l.deployer.Deploy(ctx, st.Name, composeMap, port.DeployOpts{
+		PullPolicy: l.pullPolicy,
+		ComposeDir: composeDir,
+	}); err != nil {
 		log.Error("gitops: deploy failed", "err", err)
 		l.recorder.SyncError("deploy")
 		l.markDeploy(st.Name, rev, false)

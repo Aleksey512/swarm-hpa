@@ -54,7 +54,10 @@ func (d *Deployer) Deploy(ctx context.Context, name string, compose map[string]a
 	}
 	log.Info("stackdeploy: carry-forward applied", "autoscaled_services", changed, "live_services", len(live))
 
-	tmp, err := writeTempCompose(name, compose)
+	if opts.ComposeDir != "" {
+		log.Debug("stackdeploy: writing temp compose next to source compose (relative configs:/secrets: paths resolve against the same dir, not /tmp)", "dir", opts.ComposeDir)
+	}
+	tmp, err := writeTempCompose(name, opts.ComposeDir, compose)
 	if err != nil {
 		return err
 	}
@@ -74,12 +77,20 @@ func (d *Deployer) Deploy(ctx context.Context, name string, compose map[string]a
 
 // writeTempCompose marshals the (carry-forward-adjusted) compose map to a temp
 // file and returns its path. The caller removes it.
-func writeTempCompose(name string, compose map[string]any) (string, error) {
+//
+// When dir is non-empty, the temp file is written there — i.e. next to the
+// original compose file — so that relative configs:/secrets: file paths inside
+// the compose resolve against the original compose's directory. `docker stack
+// deploy` resolves such paths relative to the compose file it is handed, so a
+// temp file written to the OS temp dir (/tmp) breaks relative paths (they would
+// be resolved under /tmp, where the referenced files do not exist). An empty dir
+// falls back to the OS temp dir.
+func writeTempCompose(name, dir string, compose map[string]any) (string, error) {
 	b, err := yaml.Marshal(compose)
 	if err != nil {
 		return "", fmt.Errorf("stackdeploy: marshal compose for %q: %w", name, err)
 	}
-	f, err := os.CreateTemp("", "swarm-hpa-stack-"+sanitize(name)+"-*.yaml")
+	f, err := os.CreateTemp(dir, "swarm-hpa-stack-"+sanitize(name)+"-*.yaml")
 	if err != nil {
 		return "", fmt.Errorf("stackdeploy: temp compose file: %w", err)
 	}

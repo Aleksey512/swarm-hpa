@@ -41,8 +41,17 @@ type StackStateReader interface {
 
 // DeployOpts carries per-deploy knobs. PullPolicy is the --resolve-image mode:
 // "always" (re-resolve every deploy) or "changed" (only when the digest changed).
+//
+// ComposeDir is the on-disk directory of the original compose file. The temp
+// compose the deployer writes for `docker stack deploy` is placed there so the
+// relative configs:/secrets: file paths inside the compose resolve against the
+// same directory they resolve against for the original file (NOT against the OS
+// temp dir, which lives outside the repo worktree). Empty falls back to the OS
+// temp dir — the historical behavior, used by tests and any caller that does not
+// care about relative file paths.
 type DeployOpts struct {
 	PullPolicy string
+	ComposeDir string
 }
 
 // StackDeployer applies one rendered stack to Swarm. Implementations MUST be

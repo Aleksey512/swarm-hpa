@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"log/slog"
@@ -150,10 +151,11 @@ func (f fakeState) StackServices(_ context.Context, _ string) ([]model.StackServ
 }
 
 type recorder struct {
-	called   bool
-	name     string
-	policy   string
-	deployed map[string]any // parsed compose the deploy would have applied
+	called      bool
+	name        string
+	policy      string
+	composeFile string         // path of the temp compose handed to the deploy seam
+	deployed    map[string]any // parsed compose the deploy would have applied
 }
 
 func (r *recorder) fn() DeployFunc {
@@ -161,6 +163,7 @@ func (r *recorder) fn() DeployFunc {
 		r.called = true
 		r.name = name
 		r.policy = pullPolicy
+		r.composeFile = composeFile
 		b, err := os.ReadFile(composeFile) //nolint:gosec // G304: composeFile is a temp path the test created
 		if err != nil {
 			return err
@@ -220,5 +223,50 @@ func TestDeploy_StateErrorPropagates(t *testing.T) {
 	err := dep.Deploy(context.Background(), "s", map[string]any{"services": map[string]any{}}, port.DeployOpts{})
 	if err == nil {
 		t.Fatal("want error from state reader")
+	}
+}
+
+// TestDeploy_TempComposeCoLocatedWithSource is the regression test for the
+// "open /tmp/configs/nginx.conf: no such file or directory" bug: when ComposeDir
+// is set, the temp compose MUST be written in that directory so the relative
+// configs:/secrets: file paths inside it resolve against the source compose's
+// directory (the worktree), not the OS temp dir.
+func TestDeploy_TempComposeCoLocatedWithSource(t *testing.T) {
+	dir := t.TempDir() // stands in for the source compose file's directory
+	rec := &recorder{}
+	dep := New(fakeState{svcs: []model.StackService{}}, rec.fn(), discardLog())
+	if err := dep.Deploy(context.Background(), "mystack",
+		map[string]any{"services": map[string]any{"db": replicated("pg", 1, nil)}},
+		port.DeployOpts{ComposeDir: dir}); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if !rec.called {
+		t.Fatal("deploy seam not invoked")
+	}
+	if got := filepath.Dir(rec.composeFile); got != dir {
+		t.Errorf("temp compose dir = %q, want %q (relative configs:/secrets: paths must resolve against the source dir)", got, dir)
+	}
+	// The temp file is removed after the deploy returns; the co-located dir is left intact.
+	if _, err := os.Stat(rec.composeFile); !os.IsNotExist(err) {
+		t.Errorf("temp compose %q not removed after deploy", rec.composeFile)
+	}
+}
+
+// TestDeploy_TempComposeFallsBackToOSTemp verifies the historical behavior is
+// preserved when no ComposeDir is supplied (tests / callers that don't care about
+// relative paths): the temp compose goes to the OS temp dir, not the worktree.
+func TestDeploy_TempComposeFallsBackToOSTemp(t *testing.T) {
+	rec := &recorder{}
+	dep := New(fakeState{svcs: []model.StackService{}}, rec.fn(), discardLog())
+	if err := dep.Deploy(context.Background(), "mystack",
+		map[string]any{"services": map[string]any{"db": replicated("pg", 1, nil)}},
+		port.DeployOpts{}); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if got := filepath.Dir(rec.composeFile); got != filepath.Clean(os.TempDir()) {
+		t.Errorf("temp compose dir = %q, want %q (OS temp dir fallback when ComposeDir unset)", got, filepath.Clean(os.TempDir()))
+	}
+	if _, err := os.Stat(rec.composeFile); !os.IsNotExist(err) {
+		t.Errorf("temp compose %q not removed after deploy", rec.composeFile)
 	}
 }
