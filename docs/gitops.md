@@ -108,6 +108,32 @@ two-controller fight. The carry-forward logic is isolated in
 `internal/adapter/stackdeploy/carryforward.go` so a future native granular deploy
 could drop it.
 
+## Concurrency with the autoscaler (deploy retry)
+
+The GitOps loop and the autoscaler / healer / rebalancer run as **concurrent
+loops in the same manager process** against the same Swarm daemon. Carry-forward
+(above) settles the *replica-value* fight. There is a second, narrower
+interaction: while a `docker stack deploy` is updating the stack's services, the
+autoscaler may `ServiceUpdate` one of them in the same window — and Swarm rejects
+the loser with `update out of sequence` (an optimistic-concurrency guard on the
+service's `Version.Index`).
+
+This is transient and self-healing:
+
+- **Fast retry.** The deploy is wrapped in a bounded retry (3 attempts, short
+  backoff, context-aware). A re-deploy converges — `docker stack deploy` is
+  idempotent and carry-forward keeps replicas clamped to `[min, max]` — so the
+  collision resolves in seconds. The same guard also covers the autoscaler's own
+  `ServiceUpdate` path, so either side recovers regardless of which "wins".
+- **Outer safety net.** If a deploy still fails, the loop records it and
+  **re-deploys on the next tick** (`--gitops-interval`, default 120s); the
+  `last_sync` status and `sync_errors_total` metric reflect the transient
+  failure until it clears.
+
+Carry-forward prevents the autoscaler↔deploy *replica* conflict; the retry
+prevents the *version-timing* conflict from surfacing as a failed sync. See
+[Troubleshooting](#troubleshooting-update-out-of-sequence) if it does not clear.
+
 ## Secrets (SOPS)
 
 Secrets (and any other files) can be [sops](https://github.com/getsops/sops)-encrypted
@@ -215,6 +241,33 @@ matrix, the config field mapping, a step-by-step cut-over, and rollback.
 With `--dry-run` (the default), the loop logs each intended deploy and records a
 `sync_suppressed_total{reason="dry_run"}` metric **without** calling
 `docker stack deploy`. Flip `--dry-run=false` (or `DRY_RUN=false`) to apply.
+
+## Troubleshooting: `update out of sequence`
+
+A `docker stack deploy` log line like
+
+```
+deploy: stackdeploy: deploy "web": failed to update service web_core: Error
+response from daemon: rpc error: code = Unknown desc = update out of sequence
+```
+
+means Swarm rejected a `ServiceUpdate` because the service changed between
+docker/cli's read and its write. Two causes:
+
+- **Transient / episodic** — the autoscaler/healer mutated the service
+  mid-deploy. Expected and self-healing: the deploy retries in seconds, and the
+  next sync tick re-applies if needed. Watch `sync_errors_total` /
+  `deploys_total` on `/metrics`; occasional blips are normal, a steady stream is
+  not. If one service flips constantly, check whether the autoscaler is flapping
+  it (cooldown / stabilization windows).
+- **Persistent** — a **second writer** outside this manager is also mutating the
+  service. Look for:
+  - another `swarm-hpa` manager instance (`docker service ls` — the manager is
+    `replicas: 1`);
+  - **swarm-cd still running** alongside swarm-hpa (see
+    [Migrating from swarm-cd](migrating-from-swarm-cd.md) — run only one);
+  - an external tool or human running `docker service update` /
+    `docker stack deploy` (Portainer, CI, a shell).
 
 ## See Also
 

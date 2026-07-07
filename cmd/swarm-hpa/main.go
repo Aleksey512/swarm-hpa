@@ -164,7 +164,11 @@ func runManager(ctx context.Context, cfg config.Config, cli *client.Client, logg
 			logger.Error("failed to initialize docker cli for gitops", "err", err)
 			return 1
 		}
-		deployer := stackdeploy.New(swarmCtl, stackdeploy.DockerCLIDeploy(dockerCli), logger)
+		// Wrap the deploy in a bounded retry: a `docker stack deploy` fails with
+		// "update out of sequence" when the autoscaler/healer mutates a service
+		// mid-deploy; re-running converges (idempotent, carry-forward clamps
+		// replicas). The loop's per-tick retry remains the outer safety net.
+		deployer := stackdeploy.New(swarmCtl, stackdeploy.WithRetry(stackdeploy.DockerCLIDeploy(dockerCli), logger), logger)
 		gitLoop := gitopsync.New(
 			git.New(cfg.GitOpsReposPath, repos, logger),
 			stackrender.New(logger),

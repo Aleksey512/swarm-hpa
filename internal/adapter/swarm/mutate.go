@@ -6,7 +6,8 @@ import (
 	"time"
 
 	dswarm "github.com/docker/docker/api/types/swarm"
-	"github.com/docker/docker/errdefs"
+
+	"github.com/Aleksey512/swarm-hpa/internal/adapter/dockererr"
 )
 
 // maxUpdateAttempts bounds optimistic-concurrency retries on ServiceUpdate.
@@ -70,8 +71,7 @@ func (a *Adapter) updateService(
 		}
 
 		lastErr = err
-		//nolint:staticcheck // errdefs.IsConflict matches the pinned Docker SDK v28.5.2; SA1019 suggests containerd cerrdefs, which this module does not import.
-		if !errdefs.IsConflict(err) {
+		if !dockererr.IsVersionConflict(err) {
 			return fmt.Errorf("%s %s: %w", action, serviceID, err)
 		}
 		a.logger.Warn("service version conflict, retrying",
