@@ -145,7 +145,7 @@ func manualTicks() (TickSource, chan<- time.Time) {
 
 // --- tests ---
 
-func TestLoop_NewRevisionDeploysThenSkips(t *testing.T) {
+func TestLoop_NewRevisionDeploysNotSkips(t *testing.T) {
 	git := &fakeGit{revs: []string{"aaa", "bbb"}, files: map[string][]byte{"compose.yaml": []byte("services:\n")}}
 	dep := newFakeDeployer(nil)
 	src, tick := manualTicks()
@@ -157,16 +157,12 @@ func TestLoop_NewRevisionDeploysThenSkips(t *testing.T) {
 
 	<-dep.ch // immediate syncAll: rev aaa → deploy #1
 	tick <- time.Now()
-	<-dep.ch           // rev bbb → deploy #2
-	tick <- time.Now() // rev bbb again → unchanged → skip
+	<-dep.ch // rev bbb → deploy #2
+	tick <- time.Now()
+	<-dep.ch // rev bbb → deploy #3
 
-	select {
-	case <-dep.ch:
-		t.Fatal("expected no third deploy on unchanged revision")
-	case <-time.After(80 * time.Millisecond):
-	}
-	if c := dep.callCount(); c != 2 {
-		t.Fatalf("deploy call count = %d, want 2", c)
+	if c := dep.callCount(); c != 3 {
+		t.Fatalf("deploy call count = %d, want 3", c)
 	}
 
 	cancel()

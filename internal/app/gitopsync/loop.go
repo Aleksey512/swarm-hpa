@@ -311,7 +311,6 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 	log.Info("gitops: stack synced", "revision", rev)
 }
 
-
 func (l *Loop) markDeploy(name, rev string, ok bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
