@@ -218,12 +218,6 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 	rev = r
 	l.recorder.LastRevision(st.Name, rev)
 
-	if l.unchangedSinceLastSuccess(st.Name, rev) {
-		log.Debug("gitops: no changes; skipping deploy", "revision", rev)
-		deployed = true // already deployed at this rev with a prior success
-		return
-	}
-
 	composeBytes, err := l.git.ReadFile(ctx, st, st.ComposeFile)
 	if err != nil {
 		log.Error("gitops: read compose failed", "err", err)
@@ -317,14 +311,6 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 	log.Info("gitops: stack synced", "revision", rev)
 }
 
-// unchangedSinceLastSuccess reports whether the stack is already deployed at this
-// revision with no prior failure (so a deploy would be a redundant no-op). A
-// failed last deploy is retried even at the same revision.
-func (l *Loop) unchangedSinceLastSuccess(name, rev string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.lastDeployedRev[name] == rev && l.lastDeployedOK[name]
-}
 
 func (l *Loop) markDeploy(name, rev string, ok bool) {
 	l.mu.Lock()
