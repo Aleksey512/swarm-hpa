@@ -34,6 +34,8 @@
     <text x="235" y="246" text-anchor="middle" fill="#c9d1d9">Self-healing</text>
     <rect x="297" y="226" width="152" height="30" rx="15" fill="#1f2630" stroke="#30363d"/>
     <text x="373" y="246" text-anchor="middle" fill="#c9d1d9">Dry-run by default</text>
+    <rect x="458" y="226" width="92" height="30" rx="15" fill="#1f2630" stroke="#30363d"/>
+    <text x="503" y="246" text-anchor="middle" fill="#c9d1d9">GitOps</text>
   </g>
 
   <!-- right: motif -->
