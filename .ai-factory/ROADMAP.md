@@ -37,7 +37,7 @@
 ## v0.5.0
 
 - [x] **Per-stack image pull policy** — add a `pull_policy: always|changed` field to `stacks.yaml` that overrides the global `--gitops-pull-policy` for a single stack; validated (`always|changed`) and threaded through the sync loop into `DeployOptions`, falling back to the global default when unset. Backward compatible (omit the field → current global behavior unchanged). *(delivers the per-stack override on top of the v0.4.0 global-only pull policy; the "global + per-stack" capability is now complete)*
-- [ ] **Expanded self-observability metrics** — surface what the daemon *observes and decides*, not just action counters: per-service gauges for current replicas, desired replicas, the observed metric value, and last decision (scale-up/scale-down/hold); per-service cooldown / in-cooldown state; a stuck-pending task-count gauge per service; and per-stack drift gauges (desired vs live replicas) so drift is alertable beyond the `/stacks` UI.
+- [x] **Expanded self-observability metrics** — surface what the daemon *observes and decides*, not just action counters: per-service gauges for current replicas, desired replicas, the observed metric value, and last decision (scale-up/scale-down/hold); per-service cooldown / in-cooldown state; a stuck-pending task-count gauge per service; and per-stack drift gauges (desired vs live replicas) so drift is alertable beyond the `/stacks` UI.
 
 ## Completed
 
@@ -64,3 +64,4 @@
 | Status, drift, web UI & API (v0.4.0) | 2026-07-03 |
 | swarm-cd migration & docs (v0.4.0) | 2026-07-03 |
 | Per-stack image pull policy (v0.5.0) | 2026-07-14 |
+| Expanded self-observability metrics (v0.5.0) | 2026-07-15 |
