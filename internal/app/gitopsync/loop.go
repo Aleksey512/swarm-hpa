@@ -294,8 +294,18 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 	// configs:/secrets: paths inside it resolve against the same directory they
 	// resolve against for the original file (the worktree), not /tmp.
 	composeDir := filepath.Join(l.git.WorktreePath(st), filepath.Dir(st.ComposeFile))
+	// Resolve the image pull policy: a per-stack pull_policy (stacks.yaml)
+	// overrides the global --gitops-pull-policy; an empty per-stack value falls
+	// back to the global default.
+	pullPolicy := l.pullPolicy
+	source := "global"
+	if st.PullPolicy != "" {
+		pullPolicy = st.PullPolicy
+		source = "per-stack"
+	}
+	log.Debug("gitops: pull policy resolved", "stack", st.Name, "pull_policy", pullPolicy, "source", source)
 	if err := l.deployer.Deploy(ctx, st.Name, composeMap, port.DeployOpts{
-		PullPolicy: l.pullPolicy,
+		PullPolicy: pullPolicy,
 		ComposeDir: composeDir,
 	}); err != nil {
 		log.Error("gitops: deploy failed", "err", err)

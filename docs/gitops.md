@@ -60,6 +60,10 @@ For a complete, self-contained demo (local git repo + carry-forward + drift at
 | `values_file` | no | Optional; the compose file is rendered as a Go `text/template` with `{{.Values.*}}` from this file. |
 | `sops_files` | no | sops-encrypted files (repo-relative) to decrypt before deploy. Ignored when `sops_secrets_discovery` is true. |
 | `sops_secrets_discovery` | no | When true, auto-discover sops files from the compose's file-backed `secrets:` (and ignore `sops_files`). |
+| `pull_policy` | no | Overrides the global `--gitops-pull-policy` for this stack only: `always` or `changed`. Omit to use the global flag. (swarm-hpa extension; no swarm-cd equivalent.) |
+
+When set, a stack's `pull_policy` takes precedence over the global
+`--gitops-pull-policy` / `GITOPS_PULL_POLICY` for that stack's deploys only.
 
 Both files are read from the `--gitops-configs-path` directory (default `.`).
 
@@ -71,7 +75,7 @@ Both files are read from the `--gitops-configs-path` directory (default `.`).
 | `--gitops-configs-path` | `GITOPS_CONFIGS_PATH` | `.` | Directory containing `repos.yaml` and `stacks.yaml`. |
 | `--gitops-repos-path` | `GITOPS_REPOS_PATH` | `repos` | Root under which each repo is cloned (`<path>/<repo>`). |
 | `--gitops-interval` | `GITOPS_INTERVAL` | `120s` | Stack-sync loop period. |
-| `--gitops-pull-policy` | `GITOPS_PULL_POLICY` | `always` | `--resolve-image` mode for `docker stack deploy`: `always` or `changed`. |
+| `--gitops-pull-policy` | `GITOPS_PULL_POLICY` | `always` | `--resolve-image` mode for `docker stack deploy`: `always` or `changed`. Overridden per stack by `pull_policy` in `stacks.yaml`. |
 | `--gitops-auto-rotate` | `GITOPS_AUTO_ROTATE` | `true` | Rename file-backed configs/secrets to `<stack>-<name>-<hash>` so Swarm picks up changed content (swarm-cd `auto_rotate`). |
 | `--gitops-concurrency` | `GITOPS_CONCURRENCY` | `4` | Max number of stacks synced in parallel. Stacks sharing a repo serialize, so effective parallelism is bounded by the number of distinct repos (`>= 1`). |
 

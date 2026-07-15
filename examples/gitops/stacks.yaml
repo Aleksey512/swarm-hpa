@@ -15,3 +15,4 @@ demoapp:
   repo: demoapp
   branch: main
   compose_file: compose.yaml
+  # pull_policy: always   # override the global --gitops-pull-policy for this stack only

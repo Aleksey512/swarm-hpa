@@ -120,6 +120,66 @@ func TestLoadGitOpsSopsFields(t *testing.T) {
 	}
 }
 
+func TestLoadGitOpsPullPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		yaml    string
+		want    string
+		wantErr string // non-empty substring expected in the error ("" = no error)
+	}{
+		{
+			name: "always",
+			yaml: "web:\n  repo: myrepo\n  branch: main\n  compose_file: compose.yaml\n  pull_policy: always\n",
+			want: "always",
+		},
+		{
+			name: "changed",
+			yaml: "web:\n  repo: myrepo\n  branch: main\n  compose_file: compose.yaml\n  pull_policy: changed\n",
+			want: "changed",
+		},
+		{
+			name: "omitted means global fallback",
+			yaml: "web:\n  repo: myrepo\n  branch: main\n  compose_file: compose.yaml\n",
+			want: "",
+		},
+		{
+			name:    "invalid rejected",
+			yaml:    "web:\n  repo: myrepo\n  branch: main\n  compose_file: compose.yaml\n  pull_policy: latest\n",
+			wantErr: "always|changed",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "repos.yaml"), []byte("myrepo:\n  url: https://example.com/repo.git\n"), 0o600); err != nil {
+				t.Fatalf("write repos.yaml: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "stacks.yaml"), []byte(tc.yaml), 0o600); err != nil {
+				t.Fatalf("write stacks.yaml: %v", err)
+			}
+
+			_, stacks, err := LoadGitOps(dir)
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected an error, got nil")
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("error %q does not contain %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadGitOps: %v", err)
+			}
+			if len(stacks) != 1 {
+				t.Fatalf("got %d stacks, want 1", len(stacks))
+			}
+			if got := stacks[0].PullPolicy; got != tc.want {
+				t.Errorf("PullPolicy = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestLoadGitOps_SwarmCDCompat proves the drop-in compatibility claim: a
 // swarm-cd-style repos.yaml + stacks.yaml parses into swarm-hpa's config with the
 // documented field mapping. If a future refactor breaks swarm-cd compat, this test
