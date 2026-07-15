@@ -147,6 +147,10 @@ func (r *Reconciler) observe(ctx context.Context) {
 			}
 		}
 		pending, running := countStates(tasks)
+		r.recorder.ServicePendingTasks(svc.Ref.Name, pending)
+		for action, remaining := range r.guard.CooldownRemaining(svc.Ref.ID, now) {
+			r.recorder.ServiceCooldown(svc.Ref.Name, action, remaining > 0, remaining)
+		}
 		r.logger.Debug("observed service",
 			"service", svc.Ref.Name,
 			"replicas", svc.Replicas,
@@ -170,6 +174,14 @@ func (r *Reconciler) observe(ctx context.Context) {
 				desired := autoscaler.Desired(svc.Replicas, val, svc.Policy)
 				stabilized := r.stabilizer.Recommend(svc.Ref.ID, svc.Replicas, desired, now)
 				final := autoscaler.ClampStep(svc.Replicas, stabilized, r.maxStep)
+				decision := "hold"
+				switch {
+				case final > svc.Replicas:
+					decision = "scale_up"
+				case final < svc.Replicas:
+					decision = "scale_down"
+				}
+				r.recorder.ServiceDecision(svc.Ref.Name, svc.Replicas, final, val, decision)
 				r.logger.Info("scaling decision",
 					"service", svc.Ref.Name, "metric", svc.Policy.Metric,
 					"value", val, "target", svc.Policy.Target,

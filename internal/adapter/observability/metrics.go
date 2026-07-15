@@ -3,6 +3,7 @@ package observability
 import (
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -42,6 +43,24 @@ type Recorder struct {
 	agentDuplicateTotal *prometheus.CounterVec
 	nodeCPUPct          *prometheus.GaugeVec
 	nodeMemPct          *prometheus.GaugeVec
+
+	// Expanded self-observability gauges (v0.5.0): what the daemon observes and
+	// decides, not just action counters.
+	currentReplicas      *prometheus.GaugeVec
+	desiredReplicas      *prometheus.GaugeVec
+	metricValue          *prometheus.GaugeVec
+	lastDecision         *prometheus.GaugeVec
+	pendingTasks         *prometheus.GaugeVec
+	inCooldown           *prometheus.GaugeVec
+	cooldownRemaining    *prometheus.GaugeVec
+	stackDesiredReplicas *prometheus.GaugeVec
+	stackLiveReplicas    *prometheus.GaugeVec
+
+	// lastDecisionState tracks the previous decision label per service so the
+	// stale series can be cleared when the decision changes (otherwise a service
+	// would show two simultaneous last_decision=1 labels).
+	lastDecisionMu    sync.Mutex
+	lastDecisionState map[string]string
 
 	logger *slog.Logger
 }
@@ -131,6 +150,45 @@ func NewRecorder(version string, logger *slog.Logger) *Recorder {
 			Namespace: metricNamespace, Name: "node_mem_pct",
 			Help: "Latest reported node memory utilization (0..100), by node.",
 		}, []string{"node"}),
+
+		currentReplicas: f.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: metricNamespace, Name: "current_replicas",
+			Help: "Current replica count of an autoscaled service, as seen this reconcile pass.",
+		}, []string{"service"}),
+		desiredReplicas: f.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: metricNamespace, Name: "desired_replicas",
+			Help: "Replica count the autoscaler intends for a service this pass (post stabilize+clamp; intent, not necessarily applied).",
+		}, []string{"service"}),
+		metricValue: f.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: metricNamespace, Name: "metric_value",
+			Help: "Observed scaling metric value for a service (in the metric's own units).",
+		}, []string{"service"}),
+		lastDecision: f.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: metricNamespace, Name: "last_decision",
+			Help: "Constant 1 labeled by the autoscaler's last decision for a service (scale_up|scale_down|hold).",
+		}, []string{"service", "decision"}),
+		pendingTasks: f.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: metricNamespace, Name: "pending_tasks",
+			Help: "Tasks currently in the pending state for a service.",
+		}, []string{"service"}),
+		inCooldown: f.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: metricNamespace, Name: "in_cooldown",
+			Help: "1 if the service is currently in cooldown for the labeled action, else 0.",
+		}, []string{"service", "action"}),
+		cooldownRemaining: f.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: metricNamespace, Name: "cooldown_remaining_seconds",
+			Help: "Seconds remaining before the labeled action is permitted again on the service (0 when not in cooldown).",
+		}, []string{"service", "action"}),
+		stackDesiredReplicas: f.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: metricNamespace, Name: "stack_desired_replicas",
+			Help: "Desired (compose-declared) replica count for a non-autoscaled stack service.",
+		}, []string{"stack", "service"}),
+		stackLiveReplicas: f.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: metricNamespace, Name: "stack_live_replicas",
+			Help: "Live (Swarm) replica count for a stack service; differs from stack_desired_replicas when drift exists.",
+		}, []string{"stack", "service"}),
+
+		lastDecisionState: map[string]string{},
 
 		logger: logger,
 	}
@@ -237,4 +295,45 @@ func (r *Recorder) AgentDuplicate(node string) {
 func (r *Recorder) NodeLoad(node string, cpuPct, memPct float64) {
 	r.nodeCPUPct.WithLabelValues(node).Set(cpuPct)
 	r.nodeMemPct.WithLabelValues(node).Set(memPct)
+}
+
+// --- Expanded self-observability (v0.5.0) ---
+
+// ServiceDecision records the autoscaler's per-service intent for this pass:
+// current vs desired replicas, the observed metric value, and the decision.
+func (r *Recorder) ServiceDecision(service string, current, desired uint64, metricValue float64, decision string) {
+	r.currentReplicas.WithLabelValues(service).Set(float64(current))
+	r.desiredReplicas.WithLabelValues(service).Set(float64(desired))
+	r.metricValue.WithLabelValues(service).Set(metricValue)
+
+	// last_decision: clear the service's previous decision label so a service
+	// never shows two simultaneous last_decision=1 series when its decision changes.
+	r.lastDecisionMu.Lock()
+	if prev, ok := r.lastDecisionState[service]; ok && prev != decision {
+		r.lastDecision.DeleteLabelValues(service, prev)
+	}
+	r.lastDecisionState[service] = decision
+	r.lastDecisionMu.Unlock()
+	r.lastDecision.WithLabelValues(service, decision).Set(1)
+}
+
+// ServicePendingTasks records a service's current pending-task count.
+func (r *Recorder) ServicePendingTasks(service string, pending int) {
+	r.pendingTasks.WithLabelValues(service).Set(float64(pending))
+}
+
+// ServiceCooldown records a service's cooldown state for one action.
+func (r *Recorder) ServiceCooldown(service, action string, inCooldown bool, remainingSeconds float64) {
+	v := 0.0
+	if inCooldown {
+		v = 1
+	}
+	r.inCooldown.WithLabelValues(service, action).Set(v)
+	r.cooldownRemaining.WithLabelValues(service, action).Set(remainingSeconds)
+}
+
+// StackReplicas records a stack service's desired vs live replica counts.
+func (r *Recorder) StackReplicas(stack, service string, desired, live uint64) {
+	r.stackDesiredReplicas.WithLabelValues(stack, service).Set(float64(desired))
+	r.stackLiveReplicas.WithLabelValues(stack, service).Set(float64(live))
 }

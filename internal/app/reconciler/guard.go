@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/Aleksey512/swarm-hpa/internal/core/model"
 	"github.com/Aleksey512/swarm-hpa/internal/core/port"
@@ -36,6 +37,32 @@ func NewGuard(swarm port.SwarmController, cooldown *Cooldown, windows Cooldowns,
 		recorder = port.NopRecorder{}
 	}
 	return &Guard{swarm: swarm, cooldown: cooldown, windows: windows, dryRun: dryRun, recorder: recorder, logger: logger}
+}
+
+// CooldownRemaining returns, per action, the seconds remaining before that action
+// is permitted again on the service (0 when not in cooldown or never acted). The
+// shared last-action timestamp is measured against each action's own window. Used
+// to expose cooldown state as self-observability gauges; it does not mutate state.
+func (g *Guard) CooldownRemaining(serviceID string, now time.Time) map[string]float64 {
+	last, ok := g.cooldown.Until(serviceID)
+	if !ok {
+		return map[string]float64{"scale_up": 0, "scale_down": 0, "heal": 0, "rebalance": 0}
+	}
+	rem := func(window time.Duration) float64 {
+		if window <= 0 {
+			return 0
+		}
+		if r := window - now.Sub(last); r > 0 {
+			return r.Seconds()
+		}
+		return 0
+	}
+	return map[string]float64{
+		"scale_up":   rem(g.windows.ScaleUp),
+		"scale_down": rem(g.windows.ScaleDown),
+		"heal":       rem(g.windows.Heal),
+		"rebalance":  rem(g.windows.Rebalance),
+	}
 }
 
 // Scale moves a replicated service toward `desired`, gated by dry-run + cooldown.

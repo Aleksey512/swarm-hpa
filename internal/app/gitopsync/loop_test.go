@@ -703,3 +703,64 @@ func TestLoop_WritesFailureStatus(t *testing.T) {
 		t.Errorf("ErrorStage=%q want git", got.ErrorStage)
 	}
 }
+
+// fakeStackState is a minimal port.StackStateReader for drift-gauge tests.
+type fakeStackState struct{ services []model.StackService }
+
+func (f fakeStackState) StackServices(_ context.Context, _ string) ([]model.StackService, error) {
+	return f.services, nil
+}
+
+// driftRec captures StackReplicas calls (embeds NopRecorder for the rest).
+type driftRec struct {
+	port.NopRecorder
+	mu       sync.Mutex
+	replicas []stackReplicaCall
+}
+
+type stackReplicaCall struct {
+	stack, service string
+	desired, live  uint64
+}
+
+func (r *driftRec) StackReplicas(stack, service string, desired, live uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.replicas = append(r.replicas, stackReplicaCall{stack: stack, service: service, desired: desired, live: live})
+}
+
+// TestLoop_RecordsStackReplicaDrift proves a per-stack desired-vs-live replica
+// gauge is recorded from the rendered compose (desired) and the live-state reader.
+func TestLoop_RecordsStackReplicaDrift(t *testing.T) {
+	git := &fakeGit{revs: []string{"aaa"}, files: map[string][]byte{"compose.yaml": []byte("services:\n")}}
+	dep := newFakeDeployer(nil)
+	// statusRenderer yields web(autoscaled), worker(2), agent(global) → desired={worker:2}.
+	state := fakeStackState{services: []model.StackService{{Name: "worker", Replicas: 2, Replicated: true}}}
+	rec := &driftRec{}
+	src, _ := manualTicks()
+	st := []model.StackConfig{{Name: "mystack", Repo: "r", Branch: "main", ComposeFile: "compose.yaml"}}
+	l := New(git, statusRenderer{}, dep, nil, rec, nil, st, "changed", false, false, 1, testLogger(),
+		WithTickSource(src), WithStackStateReader(state))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = l.Run(ctx, time.Hour); close(done) }()
+	<-dep.ch // deploy fires (recordStackReplicas runs before it)
+	cancel()
+	<-done
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	var worker *stackReplicaCall
+	for i := range rec.replicas {
+		if rec.replicas[i].service == "worker" {
+			worker = &rec.replicas[i]
+		}
+	}
+	if worker == nil {
+		t.Fatalf("no StackReplicas{worker} recorded; got %+v", rec.replicas)
+	}
+	if worker.stack != "mystack" || worker.desired != 2 || worker.live != 2 {
+		t.Errorf("StackReplicas = stack %q desired %d live %d, want mystack/2/2", worker.stack, worker.desired, worker.live)
+	}
+}

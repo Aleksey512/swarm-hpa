@@ -176,6 +176,7 @@ func runManager(ctx context.Context, cfg config.Config, cli *client.Client, logg
 			sops.New(logger),
 			recorder, statusStore, stacks,
 			cfg.GitOpsPullPolicy, cfg.DryRun, cfg.GitOpsAutoRotate, cfg.GitOpsConcurrency, logger,
+			gitopsync.WithStackStateReader(swarmCtl),
 		)
 		sopsStacks := 0
 		for _, s := range stacks {

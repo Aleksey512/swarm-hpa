@@ -39,6 +39,12 @@ func WithTickSource(src TickSource) Option {
 	}
 }
 
+// WithStackStateReader wires a live-state reader so the loop can emit per-stack
+// desired-vs-live replica drift gauges. Without it the drift gauges are skipped.
+func WithStackStateReader(r port.StackStateReader) Option {
+	return func(l *Loop) { l.state = r }
+}
+
 // Loop is the GitOps stack-sync control loop.
 type Loop struct {
 	git         port.GitSource
@@ -47,6 +53,7 @@ type Loop struct {
 	sops        port.SecretDecrypter
 	recorder    port.Recorder
 	statusStore port.StackStatusStore // nil → status tracking disabled (tests)
+	state       port.StackStateReader // live Swarm state for drift gauges (nil → skip)
 	stacks      []model.StackConfig
 	pullPolicy  string
 	dryRun      bool
@@ -244,7 +251,9 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 	}
 	// Snapshot the non-autoscaled, non-global desired replicas for the drift
 	// check (computed only on a successful render; stable across unchanged skips).
-	l.setDesired(st.Name, desiredReplicas(composeMap))
+	desiredSnap := desiredReplicas(composeMap)
+	l.setDesired(st.Name, desiredSnap)
+	l.recordStackReplicas(ctx, st.Name, desiredSnap)
 
 	// Dry-run short-circuits BEFORE decrypt: decrypt writes plaintext to disk (a
 	// side effect), so dry-run must not prepare or deploy.
@@ -366,6 +375,29 @@ func (l *Loop) recordStatus(name, rev, stage, errMsg string, deployed bool) {
 		DesiredReplicas: desired,
 	})
 	l.logger.Debug("gitops: status updated", "stack", name, "ok", stage == "", "stage", stage)
+}
+
+// recordStackReplicas emits per-service desired (compose) vs live (Swarm) replica
+// gauges for a stack — GitOps drift as a metric, in addition to the /stacks UI.
+// desired is the non-autoscaled, non-global snapshot from desiredReplicas; live is
+// read from Swarm when a StackStateReader is wired (skipped otherwise). A live-read
+// failure is logged at DEBUG and skipped, never failing the sync.
+func (l *Loop) recordStackReplicas(ctx context.Context, stack string, desired map[string]uint64) {
+	if l.state == nil || len(desired) == 0 {
+		return
+	}
+	live, err := l.state.StackServices(ctx, stack)
+	if err != nil {
+		l.logger.Debug("gitops: live-state read failed; drift metric skipped", "stack", stack, "err", err)
+		return
+	}
+	liveByName := make(map[string]uint64, len(live))
+	for _, s := range live {
+		liveByName[s.Name] = s.Replicas
+	}
+	for svc, d := range desired {
+		l.recorder.StackReplicas(stack, svc, d, liveByName[svc])
+	}
 }
 
 // desiredReplicas returns the non-autoscaled, non-global service→replica snapshot
