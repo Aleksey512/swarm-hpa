@@ -194,3 +194,68 @@ func TestGuardEmitsCooldownSuppressed(t *testing.T) {
 		t.Errorf("suppressed = %v, want scale:cooldown", fr.suppressed)
 	}
 }
+
+// decisionController serves one managed service at a fixed replica count, so the
+// autoscaler's decision + the expanded gauges can be asserted.
+type decisionController struct {
+	replicas uint64
+}
+
+func (c decisionController) ManagedServices(context.Context) ([]model.ManagedService, error) {
+	svc := replicatedSvc(c.replicas)
+	svc.Autoscale = true // replicatedSvc is shared with guard tests that don't need autoscaling
+	return []model.ManagedService{svc}, nil
+}
+func (decisionController) Tasks(context.Context, string) ([]model.TaskView, error) { return nil, nil }
+func (decisionController) Nodes(context.Context) ([]model.NodeView, error)         { return nil, nil }
+func (decisionController) Scale(context.Context, string, uint64) error             { return nil }
+func (decisionController) ForceUpdate(context.Context, string) error               { return nil }
+
+// TestReconcilerEmitsDecisionPendingCooldown asserts the expanded gauges are
+// recorded per pass: the decision (derived from final vs current), the pending
+// count, and one cooldown sample per action — independent of dry-run (intent).
+func TestReconcilerEmitsDecisionPendingCooldown(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		replicas     uint64
+		value        float64
+		wantDecision string
+		wantDesired  uint64
+	}{
+		{name: "scale_up", replicas: 2, value: 160, wantDecision: "scale_up", wantDesired: 4},    // ratio 2.0 → 4
+		{name: "scale_down", replicas: 4, value: 40, wantDecision: "scale_down", wantDesired: 2}, // ratio 0.5 → 2
+		{name: "hold", replicas: 3, value: 80, wantDecision: "hold", wantDesired: 3},             // at target
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fr := &fakeRecorder{}
+			observeWith(decisionController{tc.replicas}, fakeProvider{val: tc.value}, fr)
+
+			if len(fr.decisions) != 1 {
+				t.Fatalf("decisions = %+v, want 1 call", fr.decisions)
+			}
+			d := fr.decisions[0]
+			if d.service != "web" {
+				t.Errorf("decision.service = %q, want web", d.service)
+			}
+			if d.current != tc.replicas {
+				t.Errorf("decision.current = %d, want %d", d.current, tc.replicas)
+			}
+			if d.desired != tc.wantDesired {
+				t.Errorf("decision.desired = %d, want %d", d.desired, tc.wantDesired)
+			}
+			if d.value != tc.value {
+				t.Errorf("decision.value = %v, want %v", d.value, tc.value)
+			}
+			if d.decision != tc.wantDecision {
+				t.Errorf("decision.decision = %q, want %q", d.decision, tc.wantDecision)
+			}
+
+			if len(fr.pending) != 1 || fr.pending[0].pending != 0 {
+				t.Errorf("pending = %+v, want one call with 0 (no tasks)", fr.pending)
+			}
+			if len(fr.cooldowns) != 4 {
+				t.Errorf("cooldown calls = %d, want 4 (one per action)", len(fr.cooldowns))
+			}
+		})
+	}
+}

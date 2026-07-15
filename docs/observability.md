@@ -39,6 +39,32 @@ curl -s localhost:9095/metrics | grep '^swarm_hpa_'
 
 The `service` label is bounded to the opt-in set, so cardinality stays low.
 
+### Decision & state series (v0.5.0)
+
+These surface what the daemon *observes and decides* per service, every reconcile
+pass — not just the actions it applied. They are recorded as **intent**, so they
+are visible even while `--dry-run` or cooldown suppresses the real action.
+
+| Metric | Type | Labels | Meaning |
+|--------|------|--------|---------|
+| `swarm_hpa_current_replicas` | gauge | `service` | Current replica count of an autoscaled service, as seen this pass. |
+| `swarm_hpa_desired_replicas` | gauge | `service` | Replica count the autoscaler intends (post stabilize + clamp); intent, not necessarily applied. |
+| `swarm_hpa_metric_value` | gauge | `service` | Observed scaling metric value for the service (in the metric's own units). |
+| `swarm_hpa_last_decision` | gauge | `service`, `decision` | Constant `1`; `decision`: `scale_up`\|`scale_down`\|`hold`. The previous label is cleared when the decision changes. |
+| `swarm_hpa_pending_tasks` | gauge | `service` | Tasks currently in the pending state for the service. |
+| `swarm_hpa_in_cooldown` | gauge | `service`, `action` | `1` if the service is in cooldown for `action` (`scale_up`\|`scale_down`\|`heal`\|`rebalance`), else `0`. |
+| `swarm_hpa_cooldown_remaining_seconds` | gauge | `service`, `action` | Seconds before `action` is permitted again (`0` when not in cooldown). |
+
+Per-stack GitOps drift (manager, when GitOps is enabled):
+
+| Metric | Type | Labels | Meaning |
+|--------|------|--------|---------|
+| `swarm_hpa_stack_desired_replicas` | gauge | `stack`, `service` | Compose-declared replica count for a non-autoscaled stack service. |
+| `swarm_hpa_stack_live_replicas` | gauge | `stack`, `service` | Live Swarm replica count; differs from desired when drift exists. |
+
+The `service`/`action`/`decision`/`stack` labels are bounded to the configured
+sets, so cardinality stays low.
+
 ### Agent-fleet series (manager)
 
 Populated on the manager as [agents](agents-and-rebalancing.md) report in. The
@@ -94,6 +120,10 @@ scrape_configs:
 | Actions suppressed by dry-run | `swarm_hpa_actions_suppressed_total{reason="dry_run"}` |
 | Node CPU spread (rebalance signal) | `max(swarm_hpa_node_cpu_pct) - min(swarm_hpa_node_cpu_pct)` |
 | Two-agents-from-one-node alarm | `increase(swarm_hpa_agent_duplicate_total[15m])` |
+| Services intending to scale up | `swarm_hpa_last_decision{decision="scale_up"}` |
+| Desired vs current gap | `swarm_hpa_desired_replicas - swarm_hpa_current_replicas` |
+| Services currently in cooldown | `swarm_hpa_in_cooldown == 1` |
+| GitOps drift per stack service | `swarm_hpa_stack_desired_replicas - swarm_hpa_stack_live_replicas` |
 
 > Tip: while `--dry-run` is enabled (the default), real actions are zero and the
 > `actions_suppressed_total{reason="dry_run"}` series shows what *would* have

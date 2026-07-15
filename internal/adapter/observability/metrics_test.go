@@ -44,6 +44,55 @@ func TestRecorderCountersAndGauge(t *testing.T) {
 	}
 }
 
+// TestRecorderExpandedGauges asserts the v0.5.0 decision/pending/cooldown/stack
+// gauges are recorded with the right values and labels, and that a decision
+// change clears the stale last_decision series.
+func TestRecorderExpandedGauges(t *testing.T) {
+	r := NewRecorder("1.2.3", discardLogger())
+
+	r.ServiceDecision("web", 2, 4, 160, "scale_up")
+	r.ServicePendingTasks("web", 1)
+	r.ServiceCooldown("web", "scale_up", true, 30)
+	r.StackReplicas("demoapp", "db", 1, 1)
+
+	if got := testutil.ToFloat64(r.currentReplicas.WithLabelValues("web")); got != 2 {
+		t.Errorf("current_replicas{web} = %v, want 2", got)
+	}
+	if got := testutil.ToFloat64(r.desiredReplicas.WithLabelValues("web")); got != 4 {
+		t.Errorf("desired_replicas{web} = %v, want 4", got)
+	}
+	if got := testutil.ToFloat64(r.metricValue.WithLabelValues("web")); got != 160 {
+		t.Errorf("metric_value{web} = %v, want 160", got)
+	}
+	if got := testutil.ToFloat64(r.lastDecision.WithLabelValues("web", "scale_up")); got != 1 {
+		t.Errorf("last_decision{web,scale_up} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(r.pendingTasks.WithLabelValues("web")); got != 1 {
+		t.Errorf("pending_tasks{web} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(r.inCooldown.WithLabelValues("web", "scale_up")); got != 1 {
+		t.Errorf("in_cooldown{web,scale_up} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(r.cooldownRemaining.WithLabelValues("web", "scale_up")); got != 30 {
+		t.Errorf("cooldown_remaining_seconds{web,scale_up} = %v, want 30", got)
+	}
+	if got := testutil.ToFloat64(r.stackDesiredReplicas.WithLabelValues("demoapp", "db")); got != 1 {
+		t.Errorf("stack_desired_replicas{demoapp,db} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(r.stackLiveReplicas.WithLabelValues("demoapp", "db")); got != 1 {
+		t.Errorf("stack_live_replicas{demoapp,db} = %v, want 1", got)
+	}
+
+	// Decision change scale_up → hold must clear the stale scale_up series.
+	r.ServiceDecision("web", 3, 3, 80, "hold")
+	if got := testutil.ToFloat64(r.lastDecision.WithLabelValues("web", "hold")); got != 1 {
+		t.Errorf("last_decision{web,hold} = %v, want 1 after change", got)
+	}
+	if got := testutil.ToFloat64(r.lastDecision.WithLabelValues("web", "scale_up")); got != 0 {
+		t.Errorf("stale last_decision{web,scale_up} = %v, want 0 (cleared on change)", got)
+	}
+}
+
 func TestRecorderRebalanceAndAgentMetrics(t *testing.T) {
 	r := NewRecorder("1.0.0", discardLogger())
 
