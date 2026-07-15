@@ -38,6 +38,24 @@ type Recorder interface {
 	// must NOT put the revision in a metric label (unbounded cardinality) — log it
 	// and update a bounded timestamp gauge instead.
 	LastRevision(stack, revision string)
+
+	// --- Expanded self-observability (v0.5.0) ---
+
+	// ServiceDecision records the autoscaler's per-service intent for the current
+	// pass: current vs desired replicas, the observed metric value, and the
+	// decision ("scale_up", "scale_down", "hold"). Recorded every pass for
+	// autoscaled services with metric data, independent of whether the Guard
+	// applied the action (so intent is visible under dry-run/cooldown).
+	ServiceDecision(service string, current, desired uint64, metricValue float64, decision string)
+	// ServicePendingTasks records the current pending-task count for a service.
+	ServicePendingTasks(service string, pending int)
+	// ServiceCooldown records a service's cooldown state for one action
+	// ("scale_up", "scale_down", "heal", "rebalance"): inCooldown and the seconds
+	// remaining until that action is permitted again.
+	ServiceCooldown(service, action string, inCooldown bool, remainingSeconds float64)
+	// StackReplicas records a stack service's desired (compose) vs live (Swarm)
+	// replica count, exposing GitOps drift as a metric in addition to /stacks.
+	StackReplicas(stack, service string, desired, live uint64)
 }
 
 // NopRecorder is a Recorder that does nothing. It is the safe default when no
@@ -85,3 +103,17 @@ func (NopRecorder) SyncError(string) {}
 
 // LastRevision does nothing.
 func (NopRecorder) LastRevision(string, string) {}
+
+// --- Expanded self-observability (v0.5.0) ---
+
+// ServiceDecision does nothing.
+func (NopRecorder) ServiceDecision(string, uint64, uint64, float64, string) {}
+
+// ServicePendingTasks does nothing.
+func (NopRecorder) ServicePendingTasks(string, int) {}
+
+// ServiceCooldown does nothing.
+func (NopRecorder) ServiceCooldown(string, string, bool, float64) {}
+
+// StackReplicas does nothing.
+func (NopRecorder) StackReplicas(string, string, uint64, uint64) {}

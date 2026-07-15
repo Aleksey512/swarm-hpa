@@ -19,6 +19,31 @@ type fakeRecorder struct {
 	rebalances []string
 	suppressed []string // "action:reason"
 	errors     []string
+
+	// Expanded self-observability (v0.5.0).
+	decisions []decisionCall
+	pending   []pendingCall
+	cooldowns []cooldownCall
+}
+
+type decisionCall struct {
+	service  string
+	current  uint64
+	desired  uint64
+	value    float64
+	decision string
+}
+
+type pendingCall struct {
+	service string
+	pending int
+}
+
+type cooldownCall struct {
+	service string
+	action  string
+	inCool  bool
+	remain  float64
 }
 
 // compile-time proof the fake satisfies the port.
@@ -40,6 +65,18 @@ func (f *fakeRecorder) DeployApplied(string)        {}
 func (f *fakeRecorder) SyncSuppressed(string)       {}
 func (f *fakeRecorder) SyncError(string)            {}
 func (f *fakeRecorder) LastRevision(string, string) {}
+
+// Expanded self-observability (v0.5.0).
+func (f *fakeRecorder) ServiceDecision(service string, current, desired uint64, metricValue float64, decision string) {
+	f.decisions = append(f.decisions, decisionCall{service: service, current: current, desired: desired, value: metricValue, decision: decision})
+}
+func (f *fakeRecorder) ServicePendingTasks(service string, pending int) {
+	f.pending = append(f.pending, pendingCall{service: service, pending: pending})
+}
+func (f *fakeRecorder) ServiceCooldown(service, action string, inCooldown bool, remainingSeconds float64) {
+	f.cooldowns = append(f.cooldowns, cooldownCall{service: service, action: action, inCool: inCooldown, remain: remainingSeconds})
+}
+func (f *fakeRecorder) StackReplicas(string, string, uint64, uint64) {}
 
 func contains(ss []string, s string) bool {
 	for _, x := range ss {

@@ -52,6 +52,15 @@ func (c *Cooldown) Record(serviceID string) {
 	c.last[serviceID] = c.clock.Now()
 }
 
+// Until returns the last-action time for serviceID (ok=false if it has never been
+// acted on). Read-only; used to expose cooldown state without mutating it.
+func (c *Cooldown) Until(serviceID string) (time.Time, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	last, ok := c.last[serviceID]
+	return last, ok
+}
+
 // Cooldowns holds the per-action cooldown windows the Guard enforces: scale-ups
 // and scale-downs each get their own window, while heal and rebalance each use
 // their own. All actions on a service share one "last action" timestamp, so a
