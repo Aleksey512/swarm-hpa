@@ -194,6 +194,49 @@ func TestGitOpsLoop_DryRunDoesNotDeploy(t *testing.T) {
 	<-done
 }
 
+// capturePolicyDeploy records the image pull policy string passed to the deploy
+// seam (the 4th arg of DeployFunc, which becomes `--resolve-image`), instead of
+// the compose map. Used to assert a per-stack pull_policy reaches the deploy.
+type capturePolicyDeploy struct{ ch chan string }
+
+func (c *capturePolicyDeploy) fn() stackdeploy.DeployFunc {
+	return func(_ context.Context, _ string, _ string, pullPolicy string) error {
+		c.ch <- pullPolicy
+		return nil
+	}
+}
+
+// TestGitOpsLoop_PerStackPullPolicyReachesDeploy proves a stack's pull_policy
+// override threads end-to-end through the real git adapter + renderer to the
+// deploy seam (--resolve-image), overriding the global --gitops-pull-policy.
+func TestGitOpsLoop_PerStackPullPolicyReachesDeploy(t *testing.T) {
+	remote := seedGitRepo(t, "main", integrationCompose)
+	src := gitadapter.New(t.TempDir(), map[string]model.RepoConfig{"r": {URL: remote}}, testLogger())
+	cap := &capturePolicyDeploy{ch: make(chan string, 1)}
+	deployer := stackdeploy.New(liveState{}, cap.fn(), testLogger())
+
+	// Global policy is "changed"; the stack overrides to "always".
+	st := []model.StackConfig{{Name: "mystack", Repo: "r", Branch: "main", ComposeFile: "compose.yaml", PullPolicy: "always"}}
+	tickSrc, _ := manualTicks()
+	loop := New(src, stackrender.New(testLogger()), deployer, nil, &fakeRec{}, nil, st, "changed", false, false, 1, testLogger(), WithTickSource(tickSrc))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = loop.Run(ctx, time.Hour); close(done) }()
+
+	select {
+	case got := <-cap.ch:
+		if got != "always" {
+			t.Fatalf("deploy seam pull_policy = %q, want \"always\" (per-stack override must reach --resolve-image)", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout: deploy never fired")
+	}
+
+	cancel()
+	<-done
+}
+
 // --- M3: sops decrypt + rotation end-to-end ---
 
 // seedGitRepoFiles seeds a local repo with multiple files (compose + content files).

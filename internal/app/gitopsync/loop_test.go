@@ -57,21 +57,23 @@ func (fakeRenderer) Render(_, _ []byte) (map[string]any, error) {
 }
 
 type fakeDeployer struct {
-	mu    sync.Mutex
-	calls int
-	errs  []error // per-call error (index by call count)
-	ch    chan string
+	mu       sync.Mutex
+	calls    int
+	errs     []error // per-call error (index by call count)
+	ch       chan string
+	policies map[string]string // stack name → PullPolicy received in DeployOpts
 }
 
 func newFakeDeployer(errs []error) *fakeDeployer {
-	return &fakeDeployer{errs: errs, ch: make(chan string, 8)}
+	return &fakeDeployer{errs: errs, ch: make(chan string, 8), policies: map[string]string{}}
 }
 
-func (f *fakeDeployer) Deploy(_ context.Context, name string, _ map[string]any, _ port.DeployOpts) error {
+func (f *fakeDeployer) Deploy(_ context.Context, name string, _ map[string]any, opts port.DeployOpts) error {
 	f.mu.Lock()
 	idx := f.calls
 	f.calls++
 	errs := f.errs
+	f.policies[name] = opts.PullPolicy
 	f.mu.Unlock()
 	var err error
 	if idx < len(errs) {
@@ -85,6 +87,13 @@ func (f *fakeDeployer) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.calls
+}
+
+// policy returns the PullPolicy the loop passed to Deploy for the named stack.
+func (f *fakeDeployer) policy(name string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.policies[name]
 }
 
 // fakeSops records the file lists it was asked to decrypt.
@@ -294,6 +303,35 @@ func TestLoop_CancelStops(t *testing.T) {
 		// good
 	case <-time.After(time.Second):
 		t.Fatal("Run did not return after ctx cancel")
+	}
+}
+
+func TestLoop_PerStackPullPolicyOverridesGlobal(t *testing.T) {
+	git := &fakeGit{revs: []string{"aaa"}, files: map[string][]byte{"compose.yaml": []byte("services:\n")}}
+	dep := newFakeDeployer(nil)
+	src, _ := manualTicks()
+	// Two stacks on one repo: "override" pins pull_policy=changed; "default" leaves
+	// it empty to fall back to the global. The global policy passed to New is "always".
+	st := []model.StackConfig{
+		{Name: "override", Repo: "r", Branch: "main", ComposeFile: "compose.yaml", PullPolicy: "changed"},
+		{Name: "default", Repo: "r", Branch: "main", ComposeFile: "compose.yaml"},
+	}
+	l := New(git, fakeRenderer{}, dep, nil, &fakeRec{}, nil, st, "always", false, false, 1, testLogger(), WithTickSource(src))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = l.Run(ctx, time.Hour); close(done) }()
+
+	<-dep.ch // immediate syncAll deploys both stacks (concurrency=1, same repo → serial)
+	<-dep.ch
+	cancel()
+	<-done
+
+	if got, want := dep.policy("override"), "changed"; got != want {
+		t.Errorf("override stack PullPolicy = %q, want %q (per-stack must win over global)", got, want)
+	}
+	if got, want := dep.policy("default"), "always"; got != want {
+		t.Errorf("default stack PullPolicy = %q, want %q (global fallback)", got, want)
 	}
 }
 

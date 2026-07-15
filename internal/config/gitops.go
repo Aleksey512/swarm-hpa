@@ -41,6 +41,9 @@ type fileStack struct {
 	ValuesFile           string   `yaml:"values_file"`
 	SopsFiles            []string `yaml:"sops_files"`
 	SopsSecretsDiscovery bool     `yaml:"sops_secrets_discovery"`
+	// PullPolicy is a swarm-hpa extension (no swarm-cd equivalent); it overrides
+	// the global --gitops-pull-policy for this stack.
+	PullPolicy string `yaml:"pull_policy"`
 }
 
 func loadReposFile(path string) (map[string]model.RepoConfig, error) {
@@ -88,6 +91,11 @@ func loadStacksFile(configsPath string, repos map[string]model.RepoConfig) ([]mo
 		if s.ComposeFile == "" {
 			return nil, fmt.Errorf("gitops: stack %q has no compose_file", name)
 		}
+		switch s.PullPolicy {
+		case "", "always", "changed":
+		default:
+			return nil, fmt.Errorf("gitops: stack %q pull_policy must be always|changed, got %q", name, s.PullPolicy)
+		}
 		branch := s.Branch
 		if branch == "" {
 			branch = "main"
@@ -100,6 +108,7 @@ func loadStacksFile(configsPath string, repos map[string]model.RepoConfig) ([]mo
 			ValuesFile:           s.ValuesFile,
 			SopsFiles:            s.SopsFiles,
 			SopsSecretsDiscovery: s.SopsSecretsDiscovery,
+			PullPolicy:           s.PullPolicy,
 		})
 	}
 	return stacks, nil

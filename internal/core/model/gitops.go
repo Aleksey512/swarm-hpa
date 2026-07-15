@@ -28,6 +28,10 @@ type StackConfig struct {
 	// compose's file-backed secrets (swarm-cd sops_secrets_discovery) and ignores
 	// SopsFiles.
 	SopsSecretsDiscovery bool
+	// PullPolicy overrides the global --gitops-pull-policy for this stack only
+	// (swarm-cd has no equivalent; this is a swarm-hpa extension). Valid values:
+	// "always" or "changed". Empty means "use the global policy".
+	PullPolicy string
 }
 
 // StackService is the live, read-only projection of one Swarm service that belongs

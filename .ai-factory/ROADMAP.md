@@ -29,10 +29,15 @@
 - [x] **GitOps source & git sync** — declarative `repos` (url + password / `password_file` auth) and `stacks` (repo, branch, compose file) config; per-stack branch clone + pull with a per-repo lock; `DOCKER_HOST` / remote-socket (docker-socket-proxy) support. *(parity: repos.yaml / stacks.yaml, git sync)*
 - [x] **Stack rendering pipeline** — read + parse compose, Go `text/template` rendering against a `values_file` (`Values`), producing the deployable stack map. *(parity: compose templating)*
 - [x] **SOPS secrets + config/secret rotation** — age + gpg decryption (env-mounted keys), per-stack `sops_files`, automatic secret discovery from compose `secrets:` (global + per-stack, with plugin/external-secret exclusion), and `auto_rotate` config/secret rotation by content hash (`<stack>-<name>-<hash>` rename) so Swarm picks up changed content. *(parity: sops, discovery, rotation)*
-- [x] **Autoscaler-aware stack deploy** — deploy via `docker stack deploy --with-registry-auth` with a configurable image pull policy (`always` / `changed`, global + per-stack). **The differentiator:** because the same project owns both sync and scale, it never overwrites `replicas` of any `swarm.autoscaler.*` service — the swarm-cd↔HPA conflict dissolves by construction (no carry-forward hack, no two-controller fight). Dry-run-aware and logged. *(parity: deploy, image pull policy + the HPA-aware win)*
+- [x] **Autoscaler-aware stack deploy** — deploy via `docker stack deploy --with-registry-auth` with a configurable image pull policy (`always` / `changed`; per-stack override added in v0.5.0). **The differentiator:** because the same project owns both sync and scale, it never overwrites `replicas` of any `swarm.autoscaler.*` service — the swarm-cd↔HPA conflict dissolves by construction (no carry-forward hack, no two-controller fight). Dry-run-aware and logged. *(parity: deploy, image pull policy + the HPA-aware win)*
 - [x] **Concurrent scheduler & loop integration** — worker-pool concurrency (per-repo locking) and a configurable `update_interval`, integrated alongside the existing autoscale/heal reconcile loop and its single guarded mutation path. *(parity: concurrency, interval)*
 - [x] **Status, drift, web UI & API** — per-stack revision / last-error status, drift detection (live vs desired), `/metrics` for sync actions, and a `GET /stacks` JSON + static UI surface mirroring swarm-cd. *(parity: status API/UI + drift addition)*
 - [x] **swarm-cd migration & docs** — config mapping / compatibility with `repos.yaml` + `stacks.yaml`, cut-over guide from m-adawi/swarm-cd, deploy example, and docs so the move is documented and reversible.
+
+## v0.5.0
+
+- [x] **Per-stack image pull policy** — add a `pull_policy: always|changed` field to `stacks.yaml` that overrides the global `--gitops-pull-policy` for a single stack; validated (`always|changed`) and threaded through the sync loop into `DeployOptions`, falling back to the global default when unset. Backward compatible (omit the field → current global behavior unchanged). *(delivers the per-stack override on top of the v0.4.0 global-only pull policy; the "global + per-stack" capability is now complete)*
+- [ ] **Expanded self-observability metrics** — surface what the daemon *observes and decides*, not just action counters: per-service gauges for current replicas, desired replicas, the observed metric value, and last decision (scale-up/scale-down/hold); per-service cooldown / in-cooldown state; a stuck-pending task-count gauge per service; and per-stack drift gauges (desired vs live replicas) so drift is alertable beyond the `/stacks` UI.
 
 ## Completed
 
@@ -58,3 +63,4 @@
 | Autoscaler-aware stack deploy (v0.4.0) | 2026-07-03 |
 | Status, drift, web UI & API (v0.4.0) | 2026-07-03 |
 | swarm-cd migration & docs (v0.4.0) | 2026-07-03 |
+| Per-stack image pull policy (v0.5.0) | 2026-07-14 |
