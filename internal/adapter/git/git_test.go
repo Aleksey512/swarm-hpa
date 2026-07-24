@@ -80,7 +80,7 @@ func commitTo(t *testing.T, remote, content string) {
 func TestSync_ClonesAndReads(t *testing.T) {
 	remote := seedRepo(t, "main", "services:\n  web:\n    image: nginx\n")
 	a := New(t.TempDir(), map[string]model.RepoConfig{"r": {URL: remote}}, testLogger())
-	stack := model.StackConfig{Name: "s", Repo: "r", Branch: "main", ComposeFile: "compose.yaml"}
+	stack := model.StackConfig{Name: "s", Repo: "r", Branch: "main", ComposeFiles: []model.ComposeFileSpec{{File: "compose.yaml"}}}
 
 	rev, err := a.Sync(context.Background(), stack)
 	if err != nil {

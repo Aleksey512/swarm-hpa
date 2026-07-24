@@ -35,14 +35,21 @@ type fileRepo struct {
 
 // fileStack mirrors one entry of swarm-cd's stacks.yaml.
 type fileStack struct {
-	Repo                 string   `yaml:"repo"`
-	Branch               string   `yaml:"branch"`
-	ComposeFile          string   `yaml:"compose_file"`
+	Repo   string `yaml:"repo"`
+	Branch string `yaml:"branch"`
+	// ComposeFile is polymorphic: it is decoded into a generic any and then
+	// normalized by parseComposeFiles into []model.ComposeFileSpec. It accepts a
+	// scalar string ("compose.yaml"), a list of strings ([a.yaml, b.yaml]), or a
+	// list of objects ({file: ..., pull_policy: always|changed}). Mixed lists
+	// (strings and objects) are allowed. The scalar form preserves swarm-cd
+	// drop-in compatibility.
+	ComposeFile          any      `yaml:"compose_file"`
 	ValuesFile           string   `yaml:"values_file"`
 	SopsFiles            []string `yaml:"sops_files"`
 	SopsSecretsDiscovery bool     `yaml:"sops_secrets_discovery"`
 	// PullPolicy is a swarm-hpa extension (no swarm-cd equivalent); it overrides
-	// the global --gitops-pull-policy for this stack.
+	// the global --gitops-pull-policy for this stack, and is itself overridden by
+	// a per-file pull_policy on a ComposeFileSpec.
 	PullPolicy string `yaml:"pull_policy"`
 }
 
@@ -88,8 +95,9 @@ func loadStacksFile(configsPath string, repos map[string]model.RepoConfig) ([]mo
 		if _, ok := repos[s.Repo]; !ok {
 			return nil, fmt.Errorf("gitops: stack %q references unknown repo %q", name, s.Repo)
 		}
-		if s.ComposeFile == "" {
-			return nil, fmt.Errorf("gitops: stack %q has no compose_file", name)
+		files, err := parseComposeFiles(name, s.ComposeFile)
+		if err != nil {
+			return nil, err
 		}
 		switch s.PullPolicy {
 		case "", "always", "changed":
@@ -104,7 +112,7 @@ func loadStacksFile(configsPath string, repos map[string]model.RepoConfig) ([]mo
 			Name:                 name,
 			Repo:                 s.Repo,
 			Branch:               branch,
-			ComposeFile:          s.ComposeFile,
+			ComposeFiles:         files,
 			ValuesFile:           s.ValuesFile,
 			SopsFiles:            s.SopsFiles,
 			SopsSecretsDiscovery: s.SopsSecretsDiscovery,
@@ -112,4 +120,72 @@ func loadStacksFile(configsPath string, repos map[string]model.RepoConfig) ([]mo
 		})
 	}
 	return stacks, nil
+}
+
+// parseComposeFiles normalizes the polymorphic stacks.yaml compose_file value
+// into an ordered []model.ComposeFileSpec. It accepts:
+//   - a scalar string:  compose_file: compose.yaml
+//   - a list of strings: compose_file: [a.yaml, b.yaml]
+//   - a list of objects: compose_file: [{file: a.yaml, pull_policy: always}, ...]
+//   - a mixed list (strings and objects) — strings inherit the stack/global policy
+//
+// Each object's pull_policy must be "", "always", or "changed". At least one file
+// is required. The scalar form is fully backward compatible with the original
+// single-string compose_file (swarm-cd drop-in).
+//
+// goccy/go-yaml decodes a YAML scalar into a Go string and a sequence/mapping
+// into []any/map[string]any, so type-switching on any covers all four shapes
+// without depending on a custom UnmarshalYAML hook.
+func parseComposeFiles(stack string, v any) ([]model.ComposeFileSpec, error) {
+	switch t := v.(type) {
+	case nil:
+		return nil, fmt.Errorf("gitops: stack %q has no compose_file", stack)
+	case string:
+		if t == "" {
+			return nil, fmt.Errorf("gitops: stack %q has no compose_file", stack)
+		}
+		return []model.ComposeFileSpec{{File: t}}, nil
+	case []any:
+		if len(t) == 0 {
+			return nil, fmt.Errorf("gitops: stack %q has no compose_file", stack)
+		}
+		out := make([]model.ComposeFileSpec, 0, len(t))
+		for i, item := range t {
+			spec, err := parseComposeFileItem(stack, i, item)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, spec)
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("gitops: stack %q compose_file must be a string or a list, got %T", stack, v)
+	}
+}
+
+// parseComposeFileItem normalizes one element of a compose_file list. A string
+// element inherits the stack/global pull policy; an object element carries an
+// optional per-file pull_policy.
+func parseComposeFileItem(stack string, idx int, item any) (model.ComposeFileSpec, error) {
+	switch t := item.(type) {
+	case string:
+		if t == "" {
+			return model.ComposeFileSpec{}, fmt.Errorf("gitops: stack %q compose_file[%d] is empty", stack, idx)
+		}
+		return model.ComposeFileSpec{File: t}, nil
+	case map[string]any:
+		file, _ := t["file"].(string)
+		if file == "" {
+			return model.ComposeFileSpec{}, fmt.Errorf("gitops: stack %q compose_file[%d] has no file", stack, idx)
+		}
+		policy, _ := t["pull_policy"].(string)
+		switch policy {
+		case "", "always", "changed":
+		default:
+			return model.ComposeFileSpec{}, fmt.Errorf("gitops: stack %q compose_file[%d] pull_policy must be always|changed, got %q", stack, idx, policy)
+		}
+		return model.ComposeFileSpec{File: file, PullPolicy: policy}, nil
+	default:
+		return model.ComposeFileSpec{}, fmt.Errorf("gitops: stack %q compose_file[%d] must be a string or an object, got %T", stack, idx, item)
+	}
 }
