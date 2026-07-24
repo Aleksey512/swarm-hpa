@@ -216,7 +216,7 @@ func TestGitOpsLoop_PerStackPullPolicyReachesDeploy(t *testing.T) {
 	deployer := stackdeploy.New(liveState{}, cap.fn(), testLogger())
 
 	// Global policy is "changed"; the stack overrides to "always".
-	st := []model.StackConfig{{Name: "mystack", Repo: "r", Branch: "main", ComposeFile: "compose.yaml", PullPolicy: "always"}}
+	st := []model.StackConfig{{Name: "mystack", Repo: "r", Branch: "main", ComposeFiles: []model.ComposeFileSpec{{File: "compose.yaml"}}, PullPolicy: "always"}}
 	tickSrc, _ := manualTicks()
 	loop := New(src, stackrender.New(testLogger()), deployer, nil, &fakeRec{}, nil, st, "changed", false, false, 1, testLogger(), WithTickSource(tickSrc))
 
@@ -320,7 +320,7 @@ secrets:
 	cap := &captureDeploy{ch: make(chan map[string]any, 1)}
 	deployer := stackdeploy.New(liveState{}, cap.fn(), testLogger())
 	sops := &worktreeSops{plaintext: map[string][]byte{"secrets/tls.crt": []byte("tls-plaintext")}}
-	st := []model.StackConfig{{Name: "mystack", Repo: "r", Branch: "main", ComposeFile: "compose.yaml", SopsSecretsDiscovery: true}}
+	st := []model.StackConfig{{Name: "mystack", Repo: "r", Branch: "main", ComposeFiles: []model.ComposeFileSpec{{File: "compose.yaml"}}, SopsSecretsDiscovery: true}}
 
 	tickSrc, _ := manualTicks()
 	loop := New(src, stackrender.New(testLogger()), deployer, sops, &fakeRec{}, nil, st, "changed", false, true, 1, testLogger(), WithTickSource(tickSrc))
@@ -370,7 +370,7 @@ configs:
 	src := gitadapter.New(t.TempDir(), map[string]model.RepoConfig{"r": {URL: remote}}, testLogger())
 	cap := &captureDeploy{ch: make(chan map[string]any, 1)}
 	deployer := stackdeploy.New(liveState{}, cap.fn(), testLogger())
-	st := []model.StackConfig{{Name: "mystack", Repo: "r", Branch: "main", ComposeFile: "compose.yaml"}}
+	st := []model.StackConfig{{Name: "mystack", Repo: "r", Branch: "main", ComposeFiles: []model.ComposeFileSpec{{File: "compose.yaml"}}}}
 
 	tickSrc, _ := manualTicks()
 	loop := New(src, stackrender.New(testLogger()), deployer, nil, &fakeRec{}, nil, st, "changed", false, false, 1, testLogger(), WithTickSource(tickSrc))
@@ -472,9 +472,9 @@ func TestGitOpsLoop_ConcurrentSyncAcrossRepos(t *testing.T) {
 	remote2 := seedGitRepo(t, "main", integrationCompose)
 
 	stacksCfg := []model.StackConfig{
-		{Name: "a", Repo: "r1", Branch: "main", ComposeFile: "compose.yaml"},
-		{Name: "b", Repo: "r1", Branch: "main", ComposeFile: "compose.yaml"},
-		{Name: "c", Repo: "r2", Branch: "main", ComposeFile: "compose.yaml"},
+		{Name: "a", Repo: "r1", Branch: "main", ComposeFiles: []model.ComposeFileSpec{{File: "compose.yaml"}}},
+		{Name: "b", Repo: "r1", Branch: "main", ComposeFiles: []model.ComposeFileSpec{{File: "compose.yaml"}}},
+		{Name: "c", Repo: "r2", Branch: "main", ComposeFiles: []model.ComposeFileSpec{{File: "compose.yaml"}}},
 	}
 	repos := map[string]model.RepoConfig{"r1": {URL: remote1}, "r2": {URL: remote2}}
 	repoOf := func(stack string) string {

@@ -17,7 +17,7 @@ import (
 func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 func stacks(name, compose string) []model.StackConfig {
-	return []model.StackConfig{{Name: name, Repo: "r", Branch: "main", ComposeFile: compose}}
+	return []model.StackConfig{{Name: name, Repo: "r", Branch: "main", ComposeFiles: []model.ComposeFileSpec{{File: compose}}}}
 }
 
 // --- fakes ---
@@ -62,6 +62,10 @@ type fakeDeployer struct {
 	errs     []error // per-call error (index by call count)
 	ch       chan string
 	policies map[string]string // stack name → PullPolicy received in DeployOpts
+	// pullPolicies records the PullPolicy of EVERY Deploy call, in order. Needed
+	// to assert per-file policy order for multi-file stacks: the name-keyed
+	// policies map above only keeps the LAST call for a given stack.
+	pullPolicies []string
 }
 
 func newFakeDeployer(errs []error) *fakeDeployer {
@@ -74,6 +78,7 @@ func (f *fakeDeployer) Deploy(_ context.Context, name string, _ map[string]any, 
 	f.calls++
 	errs := f.errs
 	f.policies[name] = opts.PullPolicy
+	f.pullPolicies = append(f.pullPolicies, opts.PullPolicy)
 	f.mu.Unlock()
 	var err error
 	if idx < len(errs) {
@@ -94,6 +99,17 @@ func (f *fakeDeployer) policy(name string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.policies[name]
+}
+
+// pullPolicySeq returns the ordered PullPolicy values received across all Deploy
+// calls (a copy), so callers can assert per-file policy order for multi-file
+// stacks.
+func (f *fakeDeployer) pullPolicySeq() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.pullPolicies))
+	copy(out, f.pullPolicies)
+	return out
 }
 
 // fakeSops records the file lists it was asked to decrypt.
@@ -185,7 +201,7 @@ func TestLoop_DryRunSkipsPrepareAndDeploy(t *testing.T) {
 	rec := &fakeRec{}
 	src, tick := manualTicks()
 	// Stack with sops files + autoRotate on — dry-run must skip decrypt/rotate/deploy.
-	st := []model.StackConfig{{Name: "s", Repo: "r", Branch: "main", ComposeFile: "compose.yaml", SopsFiles: []string{"secrets/tls.crt"}}}
+	st := []model.StackConfig{{Name: "s", Repo: "r", Branch: "main", ComposeFiles: []model.ComposeFileSpec{{File: "compose.yaml"}}, SopsFiles: []string{"secrets/tls.crt"}}}
 	l := New(git, fakeRenderer{}, dep, sops, rec, nil, st, "changed", true, true, 1, testLogger(), WithTickSource(src))
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -214,7 +230,7 @@ func TestLoop_SopsDecryptTriggered(t *testing.T) {
 	git := &fakeGit{revs: []string{"aaa"}, files: map[string][]byte{"compose.yaml": []byte("services:\n")}}
 	dep := newFakeDeployer(nil)
 	sops := &fakeSops{}
-	st := []model.StackConfig{{Name: "s", Repo: "r", Branch: "main", ComposeFile: "compose.yaml", SopsFiles: []string{"secrets/a.yaml", "secrets/b.yaml"}}}
+	st := []model.StackConfig{{Name: "s", Repo: "r", Branch: "main", ComposeFiles: []model.ComposeFileSpec{{File: "compose.yaml"}}, SopsFiles: []string{"secrets/a.yaml", "secrets/b.yaml"}}}
 	src, _ := manualTicks()
 	l := New(git, fakeRenderer{}, dep, sops, &fakeRec{}, nil, st, "changed", false, false, 1, testLogger(), WithTickSource(src))
 
@@ -313,8 +329,8 @@ func TestLoop_PerStackPullPolicyOverridesGlobal(t *testing.T) {
 	// Two stacks on one repo: "override" pins pull_policy=changed; "default" leaves
 	// it empty to fall back to the global. The global policy passed to New is "always".
 	st := []model.StackConfig{
-		{Name: "override", Repo: "r", Branch: "main", ComposeFile: "compose.yaml", PullPolicy: "changed"},
-		{Name: "default", Repo: "r", Branch: "main", ComposeFile: "compose.yaml"},
+		{Name: "override", Repo: "r", Branch: "main", ComposeFiles: []model.ComposeFileSpec{{File: "compose.yaml"}}, PullPolicy: "changed"},
+		{Name: "default", Repo: "r", Branch: "main", ComposeFiles: []model.ComposeFileSpec{{File: "compose.yaml"}}},
 	}
 	l := New(git, fakeRenderer{}, dep, nil, &fakeRec{}, nil, st, "always", false, false, 1, testLogger(), WithTickSource(src))
 
@@ -414,7 +430,7 @@ func distinctRepoStacks(n int) ([]model.StackConfig, func(string) string) {
 	for i := 0; i < n; i++ {
 		name := fmt.Sprintf("s%d", i)
 		repo := fmt.Sprintf("r%d", i)
-		st[i] = model.StackConfig{Name: name, Repo: repo, Branch: "main", ComposeFile: "compose.yaml"}
+		st[i] = model.StackConfig{Name: name, Repo: repo, Branch: "main", ComposeFiles: []model.ComposeFileSpec{{File: "compose.yaml"}}}
 		repoOf[name] = repo
 	}
 	return st, func(s string) string { return repoOf[s] }
@@ -479,9 +495,9 @@ func TestSyncAll_PerRepoSerialization(t *testing.T) {
 	// Two stacks share repo "shared" (must serialize); a third is on repo "solo"
 	// (must run alongside one of the shared-repo stacks → cross-repo parallelism).
 	st := []model.StackConfig{
-		{Name: "a", Repo: "shared", Branch: "main", ComposeFile: "compose.yaml"},
-		{Name: "b", Repo: "shared", Branch: "main", ComposeFile: "compose.yaml"},
-		{Name: "c", Repo: "solo", Branch: "main", ComposeFile: "compose.yaml"},
+		{Name: "a", Repo: "shared", Branch: "main", ComposeFiles: []model.ComposeFileSpec{{File: "compose.yaml"}}},
+		{Name: "b", Repo: "shared", Branch: "main", ComposeFiles: []model.ComposeFileSpec{{File: "compose.yaml"}}},
+		{Name: "c", Repo: "solo", Branch: "main", ComposeFiles: []model.ComposeFileSpec{{File: "compose.yaml"}}},
 	}
 	repoMap := map[string]string{"a": "shared", "b": "shared", "c": "solo"}
 	files := map[string][]byte{"compose.yaml": []byte("services:\n")}
@@ -519,9 +535,9 @@ func TestSyncAll_PerRepoSerialization(t *testing.T) {
 
 func TestSyncAll_OneFailureDoesNotStopOthers(t *testing.T) {
 	st := []model.StackConfig{
-		{Name: "boom", Repo: "r1", Branch: "main", ComposeFile: "compose.yaml"},
-		{Name: "ok1", Repo: "r2", Branch: "main", ComposeFile: "compose.yaml"},
-		{Name: "ok2", Repo: "r3", Branch: "main", ComposeFile: "compose.yaml"},
+		{Name: "boom", Repo: "r1", Branch: "main", ComposeFiles: []model.ComposeFileSpec{{File: "compose.yaml"}}},
+		{Name: "ok1", Repo: "r2", Branch: "main", ComposeFiles: []model.ComposeFileSpec{{File: "compose.yaml"}}},
+		{Name: "ok2", Repo: "r3", Branch: "main", ComposeFiles: []model.ComposeFileSpec{{File: "compose.yaml"}}},
 	}
 	repoMap := map[string]string{"boom": "r1", "ok1": "r2", "ok2": "r3"}
 	files := map[string][]byte{"compose.yaml": []byte("services:\n")}
@@ -650,7 +666,7 @@ func TestLoop_WritesSuccessStatus(t *testing.T) {
 	dep := newFakeDeployer(nil)
 	store := newFakeStatusStore()
 	src, _ := manualTicks()
-	st := []model.StackConfig{{Name: "s", Repo: "r", Branch: "main", ComposeFile: "compose.yaml"}}
+	st := []model.StackConfig{{Name: "s", Repo: "r", Branch: "main", ComposeFiles: []model.ComposeFileSpec{{File: "compose.yaml"}}}}
 	l := New(git, statusRenderer{}, dep, nil, &fakeRec{}, store, st, "changed", false, false, 1, testLogger(), WithTickSource(src))
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -738,7 +754,7 @@ func TestLoop_RecordsStackReplicaDrift(t *testing.T) {
 	state := fakeStackState{services: []model.StackService{{Name: "worker", Replicas: 2, Replicated: true}}}
 	rec := &driftRec{}
 	src, _ := manualTicks()
-	st := []model.StackConfig{{Name: "mystack", Repo: "r", Branch: "main", ComposeFile: "compose.yaml"}}
+	st := []model.StackConfig{{Name: "mystack", Repo: "r", Branch: "main", ComposeFiles: []model.ComposeFileSpec{{File: "compose.yaml"}}}}
 	l := New(git, statusRenderer{}, dep, nil, rec, nil, st, "changed", false, false, 1, testLogger(),
 		WithTickSource(src), WithStackStateReader(state))
 
@@ -762,5 +778,140 @@ func TestLoop_RecordsStackReplicaDrift(t *testing.T) {
 	}
 	if worker.stack != "mystack" || worker.desired != 2 || worker.live != 2 {
 		t.Errorf("StackReplicas = stack %q desired %d live %d, want mystack/2/2", worker.stack, worker.desired, worker.live)
+	}
+}
+
+// --- multi-file stack tests ---
+
+// TestLoop_MultiFilePerFilePullPolicy is the headline case: one stack, two
+// compose files with distinct per-file pull policies (the dev "app always /
+// postgres changed" split). The loop must run TWO sequential deploys in file
+// order, each with its own --resolve-image, and record DeployApplied exactly
+// once for the stack (not once per file).
+func TestLoop_MultiFilePerFilePullPolicy(t *testing.T) {
+	files := map[string][]byte{
+		"app.yaml": []byte("services:\n"),
+		"pg.yaml":  []byte("services:\n"),
+	}
+	git := &fakeGit{revs: []string{"aaa"}, files: files}
+	dep := newFakeDeployer(nil)
+	rec := &fakeRec{}
+	src, _ := manualTicks()
+	st := []model.StackConfig{{Name: "s", Repo: "r", Branch: "main", ComposeFiles: []model.ComposeFileSpec{
+		{File: "app.yaml", PullPolicy: "always"},
+		{File: "pg.yaml", PullPolicy: "changed"},
+	}}}
+	// Global policy "changed" must be overridden by the per-file values.
+	l := New(git, fakeRenderer{}, dep, nil, rec, nil, st, "changed", false, false, 1, testLogger(), WithTickSource(src))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = l.Run(ctx, time.Hour); close(done) }()
+	<-dep.ch // app.yaml deploy
+	<-dep.ch // pg.yaml deploy
+	cancel()
+	<-done
+
+	if c := dep.callCount(); c != 2 {
+		t.Fatalf("multi-file stack must deploy each file once; call count = %d, want 2", c)
+	}
+	if got := dep.pullPolicySeq(); len(got) != 2 || got[0] != "always" || got[1] != "changed" {
+		t.Errorf("per-file pull policy seq = %v, want [always changed] (file order preserved)", got)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if n := len(rec.deployed); n != 1 || rec.deployed[0] != "s" {
+		t.Errorf("DeployApplied = %v, want exactly one [s] (once per successful stack tick, not per file)", rec.deployed)
+	}
+}
+
+// TestLoop_MultiFilePullPolicyPrecedence checks file → stack → global precedence
+// for each file's deploy independently.
+func TestLoop_MultiFilePullPolicyPrecedence(t *testing.T) {
+	files := map[string][]byte{"a.yaml": []byte("services:\n"), "b.yaml": []byte("services:\n")}
+	for _, tc := range []struct {
+		name        string
+		specs       []model.ComposeFileSpec
+		stackPolicy string
+		global      string
+		want        []string
+	}{
+		{
+			name:        "stack policy wins when no per-file policy",
+			specs:       []model.ComposeFileSpec{{File: "a.yaml"}, {File: "b.yaml"}},
+			stackPolicy: "changed",
+			global:      "always",
+			want:        []string{"changed", "changed"},
+		},
+		{
+			name:   "global fallback when no policy anywhere",
+			specs:  []model.ComposeFileSpec{{File: "a.yaml"}, {File: "b.yaml"}},
+			global: "always",
+			want:   []string{"always", "always"},
+		},
+		{
+			name:        "per-file overrides stack and global, mixed",
+			specs:       []model.ComposeFileSpec{{File: "a.yaml", PullPolicy: "always"}, {File: "b.yaml"}},
+			stackPolicy: "changed",
+			global:      "changed",
+			want:        []string{"always", "changed"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			git := &fakeGit{revs: []string{"aaa"}, files: files}
+			dep := newFakeDeployer(nil)
+			src, _ := manualTicks()
+			st := []model.StackConfig{{Name: "s", Repo: "r", Branch: "main", ComposeFiles: tc.specs, PullPolicy: tc.stackPolicy}}
+			l := New(git, fakeRenderer{}, dep, nil, &fakeRec{}, nil, st, tc.global, false, false, 1, testLogger(), WithTickSource(src))
+
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan struct{})
+			go func() { _ = l.Run(ctx, time.Hour); close(done) }()
+			<-dep.ch
+			<-dep.ch
+			cancel()
+			<-done
+
+			if got := dep.pullPolicySeq(); len(got) != 2 || got[0] != tc.want[0] || got[1] != tc.want[1] {
+				t.Errorf("pull policy seq = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoop_MultiFilePartialFailure proves sequential deploys are NOT
+// transactional: the first file deploys, the second fails, and the stack is
+// recorded as failed (DeployApplied NOT fired; a 'deploy' SyncError is) — even
+// though the first file's services are now live in Swarm.
+func TestLoop_MultiFilePartialFailure(t *testing.T) {
+	files := map[string][]byte{"a.yaml": []byte("services:\n"), "b.yaml": []byte("services:\n")}
+	dep := newFakeDeployer([]error{nil, errors.New("pg deploy failure")}) // file 0 OK, file 1 fails
+	rec := &fakeRec{}
+	git := &fakeGit{revs: []string{"aaa"}, files: files}
+	src, _ := manualTicks()
+	st := []model.StackConfig{{Name: "s", Repo: "r", Branch: "main", ComposeFiles: []model.ComposeFileSpec{
+		{File: "a.yaml"},
+		{File: "b.yaml"},
+	}}}
+	l := New(git, fakeRenderer{}, dep, nil, rec, nil, st, "changed", false, false, 1, testLogger(), WithTickSource(src))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = l.Run(ctx, time.Hour); close(done) }()
+	<-dep.ch // a.yaml deployed OK
+	<-dep.ch // b.yaml failed
+	cancel()
+	<-done
+
+	if c := dep.callCount(); c != 2 {
+		t.Fatalf("both files must be attempted; call count = %d, want 2", c)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.deployed) != 0 {
+		t.Errorf("DeployApplied must NOT fire when a file fails mid-stack; got %v", rec.deployed)
+	}
+	if len(rec.syncErrs) == 0 || rec.syncErrs[0] != "deploy" {
+		t.Errorf("expected a 'deploy' SyncError on mid-stack failure; got %v", rec.syncErrs)
 	}
 }

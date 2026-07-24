@@ -12,15 +12,38 @@ type RepoConfig struct {
 	PasswordFile string
 }
 
+// ComposeFileSpec is one compose file of a stack, with an optional per-file
+// image pull policy.
+//
+// A stack may declare several compose files (ComposeFiles on StackConfig). They
+// are deployed in slice order, one `docker stack deploy` each. Deploys are
+// ADDITIVE: Swarm does not prune services that are absent from a later file's
+// deploy, so the files accumulate into the single stack namespace. Each file is
+// deployed AS-IS — there is no merging — so each file must be self-contained
+// (declare its own networks/volumes and any top-level secrets/configs it
+// references). List order is the deploy order (put shared infrastructure first).
+//
+// A non-empty PullPolicy overrides the stack-level PullPolicy AND the global
+// --gitops-pull-policy for THIS file's deploy only (precedence: file → stack →
+// global). This is what makes a per-file pull split possible — e.g. dev apps
+// pull `always` while a postgres file pulls `changed`, via two deploys.
+type ComposeFileSpec struct {
+	File       string // repo-relative path to the compose file
+	PullPolicy string // "", "always", or "changed"; "" inherits stack→global
+}
+
 // StackConfig describes one stack to sync from Git and deploy to Swarm. It mirrors
 // a swarm-cd stacks.yaml entry (branch / compose_file / values_file). Name is the
 // Swarm stack namespace — the argument passed to `docker stack deploy <name>`.
 type StackConfig struct {
-	Name        string // Swarm stack namespace
-	Repo        string // key into the repos map
-	Branch      string
-	ComposeFile string
-	ValuesFile  string // optional; "" disables template rendering
+	Name   string // Swarm stack namespace
+	Repo   string // key into the repos map
+	Branch string
+	// ComposeFiles is the ordered list of compose files for this stack. Each is
+	// rendered and deployed in order (see ComposeFileSpec). At least one entry is
+	// required; the field replaces the former single ComposeFile string.
+	ComposeFiles []ComposeFileSpec
+	ValuesFile   string // optional; "" disables template rendering
 	// SopsFiles are repo-relative paths of sops-encrypted files to decrypt before
 	// deploy (swarm-cd sops_files). Ignored when SopsSecretsDiscovery is true.
 	SopsFiles []string

@@ -225,13 +225,8 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 	rev = r
 	l.recorder.LastRevision(st.Name, rev)
 
-	composeBytes, err := l.git.ReadFile(ctx, st, st.ComposeFile)
-	if err != nil {
-		log.Error("gitops: read compose failed", "err", err)
-		l.recorder.SyncError("render")
-		stage, errMsg = "render", err.Error()
-		return
-	}
+	// Read the optional, shared values file once — the same Values render every
+	// compose file in this stack.
 	var valuesBytes []byte
 	if st.ValuesFile != "" {
 		valuesBytes, err = l.git.ReadFile(ctx, st, st.ValuesFile)
@@ -242,37 +237,77 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 			return
 		}
 	}
-	composeMap, err := l.renderer.Render(composeBytes, valuesBytes)
-	if err != nil {
-		log.Error("gitops: render failed", "err", err)
-		l.recorder.SyncError("render")
-		stage, errMsg = "render", err.Error()
-		return
+
+	// Render every compose file in declaration order. Each file is deployed AS-IS
+	// (no merging), so each must be self-contained (declare its own networks/
+	// volumes and any top-level secrets/configs it references). Order is preserved
+	// for the per-file deploy loop below — list order = deploy order.
+	maps := make([]map[string]any, 0, len(st.ComposeFiles))
+	for i, spec := range st.ComposeFiles {
+		composeBytes, rerr := l.git.ReadFile(ctx, st, spec.File)
+		if rerr != nil {
+			log.Error("gitops: read compose failed", "file", spec.File, "err", rerr)
+			l.recorder.SyncError("render")
+			stage, errMsg = "render", rerr.Error()
+			return
+		}
+		composeMap, rerr := l.renderer.Render(composeBytes, valuesBytes)
+		if rerr != nil {
+			log.Error("gitops: render failed", "file", spec.File, "err", rerr)
+			l.recorder.SyncError("render")
+			stage, errMsg = "render", rerr.Error()
+			return
+		}
+		log.Debug("gitops: rendered compose file",
+			"file", spec.File, "index", i, "files_total", len(st.ComposeFiles))
+		maps = append(maps, composeMap)
 	}
+
 	// Snapshot the non-autoscaled, non-global desired replicas for the drift
 	// check (computed only on a successful render; stable across unchanged skips).
-	desiredSnap := desiredReplicas(composeMap)
+	// Unioned across all files — a service lives in exactly one file.
+	desiredSnap := make(map[string]uint64)
+	for _, m := range maps {
+		for svc, n := range desiredReplicas(m) {
+			desiredSnap[svc] = n
+		}
+	}
+	if len(desiredSnap) == 0 {
+		desiredSnap = nil
+	}
 	l.setDesired(st.Name, desiredSnap)
 	l.recordStackReplicas(ctx, st.Name, desiredSnap)
 
 	// Dry-run short-circuits BEFORE decrypt: decrypt writes plaintext to disk (a
 	// side effect), so dry-run must not prepare or deploy.
 	if l.dryRun {
+		for _, spec := range st.ComposeFiles {
+			eff, _ := effectivePullPolicy(spec, st.PullPolicy, l.pullPolicy)
+			log.Info("gitops: dry-run; would deploy compose file", "file", spec.File, "pull_policy", eff)
+		}
 		log.Info("gitops: dry-run; would decrypt/rotate/deploy stack", "revision", rev)
 		l.recorder.SyncSuppressed("dry_run")
 		return
 	}
 
 	// Decrypt sops-encrypted secret files in place (no-op when none; skipped when
-	// no decrypter is wired).
+	// no decrypter is wired). Discovery UNIONS file-backed secrets across ALL
+	// compose files (each resolved against its own file's directory) so every
+	// secret referenced anywhere in the stack is decrypted once, before any deploy.
 	sopsFiles := st.SopsFiles
 	if st.SopsSecretsDiscovery {
-		if sopsFiles, err = compose.DiscoverSecretFiles(composeMap, filepath.Dir(st.ComposeFile)); err != nil {
-			log.Error("gitops: secret discovery failed", "err", err)
-			l.recorder.SyncError("secrets")
-			stage, errMsg = "secrets", err.Error()
-			return
+		discovered := make([]string, 0)
+		for i, spec := range st.ComposeFiles {
+			files, derr := compose.DiscoverSecretFiles(maps[i], filepath.Dir(spec.File))
+			if derr != nil {
+				log.Error("gitops: secret discovery failed", "file", spec.File, "err", derr)
+				l.recorder.SyncError("secrets")
+				stage, errMsg = "secrets", derr.Error()
+				return
+			}
+			discovered = append(discovered, files...)
 		}
+		sopsFiles = discovered
 	}
 	if l.sops != nil && len(sopsFiles) > 0 {
 		log.Debug("gitops: decrypting sops files", "count", len(sopsFiles))
@@ -284,50 +319,52 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 		}
 	}
 
-	// Rotate file-backed configs/secrets by content hash so Swarm picks up changes
-	// (no-op when autoRotate is disabled).
-	if l.autoRotate {
-		resolver := func(rel string) ([]byte, error) { return l.git.ReadFile(ctx, st, rel) }
-		if n, rerr := compose.ApplyRotation(composeMap, st.Name, filepath.Dir(st.ComposeFile), resolver); rerr != nil {
-			log.Error("gitops: rotation failed", "err", rerr)
-			l.recorder.SyncError("rotate")
-			stage, errMsg = "rotate", rerr.Error()
-			return
-		} else if n > 0 {
-			log.Debug("gitops: rotated objects", "count", n)
+	// Deploy each compose file in order, with that file's effective pull policy
+	// (file → stack → global). Sequential deploys are ADDITIVE: Swarm does not
+	// prune services absent from a later file, so the files compose one stack.
+	// They are NOT transactional — a mid-stack failure leaves earlier files
+	// already applied (logged below).
+	log.Info("gitops: deploying stack", "revision", rev, "files", len(st.ComposeFiles))
+	for i, spec := range st.ComposeFiles {
+		// Rotate file-backed configs/secrets by content hash for THIS file so
+		// Swarm picks up changes (no-op when autoRotate is disabled).
+		if l.autoRotate {
+			resolver := func(rel string) ([]byte, error) { return l.git.ReadFile(ctx, st, rel) }
+			if n, rerr := compose.ApplyRotation(maps[i], st.Name, filepath.Dir(spec.File), resolver); rerr != nil {
+				log.Error("gitops: rotation failed", "file", spec.File, "err", rerr)
+				l.recorder.SyncError("rotate")
+				stage, errMsg = "rotate", rerr.Error()
+				return
+			} else if n > 0 {
+				log.Debug("gitops: rotated objects", "file", spec.File, "count", n)
+			}
 		}
-	}
 
-	log.Info("gitops: deploying stack", "revision", rev)
-	// Co-locate the temp compose with the source compose file so the relative
-	// configs:/secrets: paths inside it resolve against the same directory they
-	// resolve against for the original file (the worktree), not /tmp.
-	composeDir := filepath.Join(l.git.WorktreePath(st), filepath.Dir(st.ComposeFile))
-	// Resolve the image pull policy: a per-stack pull_policy (stacks.yaml)
-	// overrides the global --gitops-pull-policy; an empty per-stack value falls
-	// back to the global default.
-	pullPolicy := l.pullPolicy
-	source := "global"
-	if st.PullPolicy != "" {
-		pullPolicy = st.PullPolicy
-		source = "per-stack"
-	}
-	log.Debug("gitops: pull policy resolved", "stack", st.Name, "pull_policy", pullPolicy, "source", source)
-	if err := l.deployer.Deploy(ctx, st.Name, composeMap, port.DeployOpts{
-		PullPolicy: pullPolicy,
-		ComposeDir: composeDir,
-	}); err != nil {
-		log.Error("gitops: deploy failed", "err", err)
-		l.recorder.SyncError("deploy")
-		l.markDeploy(st.Name, rev, false)
-		stage, errMsg = "deploy", err.Error()
-		return
+		effPolicy, source := effectivePullPolicy(spec, st.PullPolicy, l.pullPolicy)
+		// Co-locate the temp compose with the source compose file so its relative
+		// configs:/secrets: paths resolve against the repo worktree, not /tmp
+		// (see patch 2026-07-06-14.11).
+		composeDir := filepath.Join(l.git.WorktreePath(st), filepath.Dir(spec.File))
+		log.Debug("gitops: deploying file",
+			"file", spec.File, "pull_policy", effPolicy, "source", source)
+		if err := l.deployer.Deploy(ctx, st.Name, maps[i], port.DeployOpts{
+			PullPolicy: effPolicy,
+			ComposeDir: composeDir,
+		}); err != nil {
+			log.Warn("gitops: deploy failed mid-stack; earlier files already applied (additive deploy, not rolled back)",
+				"file", spec.File, "applied_before", i, "err", err)
+			l.recorder.SyncError("deploy")
+			l.markDeploy(st.Name, rev, false)
+			stage, errMsg = "deploy", err.Error()
+			return
+		}
 	}
 	l.recorder.DeployApplied(st.Name)
 	l.markDeploy(st.Name, rev, true)
 	l.incDeploy(st.Name)
 	deployed = true
-	log.Info("gitops: stack synced", "revision", rev)
+	log.Debug("gitops: all files deployed", "count", len(st.ComposeFiles))
+	log.Info("gitops: stack synced", "revision", rev, "files", len(st.ComposeFiles))
 }
 
 func (l *Loop) markDeploy(name, rev string, ok bool) {
@@ -397,6 +434,23 @@ func (l *Loop) recordStackReplicas(ctx context.Context, stack string, desired ma
 	}
 	for svc, d := range desired {
 		l.recorder.StackReplicas(stack, svc, d, liveByName[svc])
+	}
+}
+
+// effectivePullPolicy resolves the image pull policy for one compose file's
+// deploy, with precedence: the per-file spec.PullPolicy → the stack-level
+// st.PullPolicy → the global default (l.pullPolicy). It returns the resolved
+// policy and a short source label ("per-file"|"stack"|"global") for logging.
+// This is what makes a per-file pull split possible — e.g. a dev app file pulls
+// "always" while a postgres file pulls "changed", via two sequential deploys.
+func effectivePullPolicy(spec model.ComposeFileSpec, stackPolicy, def string) (policy, source string) {
+	switch {
+	case spec.PullPolicy != "":
+		return spec.PullPolicy, "per-file"
+	case stackPolicy != "":
+		return stackPolicy, "stack"
+	default:
+		return def, "global"
 	}
 }
 

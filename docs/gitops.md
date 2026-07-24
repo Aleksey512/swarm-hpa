@@ -56,16 +56,74 @@ For a complete, self-contained demo (local git repo + carry-forward + drift at
 |-------|----------|-------------|
 | `repo` | yes | Key into `repos.yaml`. |
 | `branch` | no | Branch to track (default `main`). |
-| `compose_file` | yes | Path to the compose file inside the repo. |
+| `compose_file` | yes | One or more compose files inside the repo. Accepts a single path (string), a list of paths, or a list of `{file, pull_policy}` objects — see [Multiple compose files](#multiple-compose-files-per-stack). |
 | `values_file` | no | Optional; the compose file is rendered as a Go `text/template` with `{{.Values.*}}` from this file. |
 | `sops_files` | no | sops-encrypted files (repo-relative) to decrypt before deploy. Ignored when `sops_secrets_discovery` is true. |
 | `sops_secrets_discovery` | no | When true, auto-discover sops files from the compose's file-backed `secrets:` (and ignore `sops_files`). |
-| `pull_policy` | no | Overrides the global `--gitops-pull-policy` for this stack only: `always` or `changed`. Omit to use the global flag. (swarm-hpa extension; no swarm-cd equivalent.) |
+| `pull_policy` | no | Overrides the global `--gitops-pull-policy` for this stack only: `always` or `changed`. Omit to use the global flag. Can also be set per compose file — see [Multiple compose files](#multiple-compose-files-per-stack). (swarm-hpa extension; no swarm-cd equivalent.) |
 
 When set, a stack's `pull_policy` takes precedence over the global
 `--gitops-pull-policy` / `GITOPS_PULL_POLICY` for that stack's deploys only.
 
 Both files are read from the `--gitops-configs-path` directory (default `.`).
+
+### Multiple compose files per stack
+
+`compose_file` accepts three shapes — all backward compatible with the single-file form:
+
+```yaml
+# 1. Single file (swarm-cd parity / the default):
+web:
+  repo: my-app
+  compose_file: compose.yaml
+
+# 2. Several files — split for convenience (independent service groups):
+web:
+  repo: my-app
+  compose_file:
+    - services.yaml
+    - monitoring.yaml
+
+# 3. Several files with a per-file image pull policy:
+web:
+  repo: my-app
+  compose_file:
+    - file: app.yaml
+      pull_policy: always      # refresh :dev on every sync
+    - file: postgres.yaml
+      pull_policy: changed     # don't re-pull a pinned postgres image
+```
+
+Mixed lists (some entries bare strings, some `{file, pull_policy}` objects) are
+allowed; bare strings inherit the stack / global pull policy.
+
+**How files are applied:** they are deployed **in list order, one
+`docker stack deploy` each** — *not* merged. Each file is rendered and deployed
+as-is, so **each file must be self-contained**: declare the `networks:` /
+`volumes:` and any top-level `secrets:` / `configs:` it references. List order is
+the deploy order (put shared infrastructure first).
+
+**Per-file pull policy** — precedence is `file → stack → global`: a file's
+`pull_policy` overrides the stack-level `pull_policy`, which overrides the global
+`--gitops-pull-policy`. This is the only way to apply different `--resolve-image`
+modes within one stack (e.g. the dev split above: app pulls `always`, postgres
+pulls `changed`, via two sequential deploys).
+
+**Two caveats** inherent to sequential `docker stack deploy`:
+
+- **Deploys are additive, not pruning.** `docker stack deploy` does *not* remove
+  services absent from a later file's deploy — the files accumulate into one
+  stack. Likewise, *removing* a service from a compose file does not remove it
+  from Swarm; remove it manually with `docker service rm`.
+- **Sequential deploys are not transactional.** If file *k* fails, files
+  *1…k−1* are already applied in Swarm (they are not rolled back). The stack is
+  recorded as failed (see `GET /stacks`); fix the failing file and the next sync
+  retries.
+
+SOPS discovery and config/secret rotation run per file (each resolved against its
+own file's directory), and autoscaler carry-forward applies to each deploy
+individually — so a `swarm.autoscaler.enabled` service is never reset by either
+deploy.
 
 ### Flags & environment
 
@@ -110,7 +168,9 @@ swarm-hpa GitOps tick
 So the GitOps re-apply is a no-op for the autoscaler's replica field — no
 two-controller fight. The carry-forward logic is isolated in
 `internal/adapter/stackdeploy/carryforward.go` so a future native granular deploy
-could drop it.
+could drop it. If a stack declares [multiple compose files](#multiple-compose-files-per-stack),
+the render → decrypt → rotate → carry-forward → deploy sequence runs once per
+file, in list order.
 
 ## Concurrency with the autoscaler (deploy retry)
 

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Aleksey512/swarm-hpa/internal/core/model"
 )
 
 func fakeEnv(m map[string]string) func(string) (string, bool) {
@@ -224,7 +226,7 @@ func TestLoadGitOps_SwarmCDCompat(t *testing.T) {
 
 	s := stacks[0]
 	if s.Name != "web" || s.Repo != "myapp" || s.Branch != "main" ||
-		s.ComposeFile != "compose.yaml" || s.ValuesFile != "values.yaml" {
+		len(s.ComposeFiles) != 1 || s.ComposeFiles[0].File != "compose.yaml" || s.ValuesFile != "values.yaml" {
 		t.Errorf("stack core field mapping mismatch: %+v", s)
 	}
 	if len(s.SopsFiles) != 1 || s.SopsFiles[0] != "secrets/db.yaml" {
@@ -280,7 +282,7 @@ func TestLoadGitOps_ExampleConfigs(t *testing.T) {
 	}
 
 	s := stacks[0]
-	if s.Name != "demoapp" || s.Repo != "demoapp" || s.Branch != "main" || s.ComposeFile != "compose.yaml" {
+	if s.Name != "demoapp" || s.Repo != "demoapp" || s.Branch != "main" || len(s.ComposeFiles) != 1 || s.ComposeFiles[0].File != "compose.yaml" {
 		t.Errorf("example stack mapping mismatch: %+v", s)
 	}
 }
@@ -598,5 +600,99 @@ func TestRedactURL(t *testing.T) {
 	}
 	if redactURL("http://prom:9090") != "http://prom:9090" {
 		t.Error("URL without credentials should be unchanged")
+	}
+}
+
+// TestLoadGitOps_ComposeFileShapes covers the polymorphic compose_file field:
+// scalar string (swarm-cd parity), list of strings, list of {file, pull_policy}
+// objects, mixed lists, and the error cases. The scalar form is the backward-
+// compatibility guarantee.
+func TestLoadGitOps_ComposeFileShapes(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		yaml    string
+		want    []model.ComposeFileSpec
+		wantErr string // non-empty substring expected in the error ("" = no error)
+	}{
+		{
+			name: "scalar string (backward compat)",
+			yaml: "web:\n  repo: myrepo\n  compose_file: compose.yaml\n",
+			want: []model.ComposeFileSpec{{File: "compose.yaml"}},
+		},
+		{
+			name: "list of strings",
+			yaml: "web:\n  repo: myrepo\n  compose_file:\n    - a.yaml\n    - b.yaml\n",
+			want: []model.ComposeFileSpec{{File: "a.yaml"}, {File: "b.yaml"}},
+		},
+		{
+			name: "list of objects with per-file policy",
+			yaml: "web:\n  repo: myrepo\n  compose_file:\n    - file: app.yaml\n      pull_policy: always\n    - file: pg.yaml\n      pull_policy: changed\n",
+			want: []model.ComposeFileSpec{{File: "app.yaml", PullPolicy: "always"}, {File: "pg.yaml", PullPolicy: "changed"}},
+		},
+		{
+			name: "mixed list (string + object)",
+			yaml: "web:\n  repo: myrepo\n  compose_file:\n    - a.yaml\n    - file: b.yaml\n      pull_policy: changed\n",
+			want: []model.ComposeFileSpec{{File: "a.yaml"}, {File: "b.yaml", PullPolicy: "changed"}},
+		},
+		{
+			name:    "empty scalar rejected",
+			yaml:    "web:\n  repo: myrepo\n  compose_file: \"\"\n",
+			wantErr: "no compose_file",
+		},
+		{
+			name:    "empty list rejected",
+			yaml:    "web:\n  repo: myrepo\n  compose_file: []\n",
+			wantErr: "no compose_file",
+		},
+		{
+			name:    "object missing file rejected",
+			yaml:    "web:\n  repo: myrepo\n  compose_file:\n    - pull_policy: always\n",
+			wantErr: "has no file",
+		},
+		{
+			name:    "bad per-file pull_policy rejected",
+			yaml:    "web:\n  repo: myrepo\n  compose_file:\n    - file: a.yaml\n      pull_policy: latest\n",
+			wantErr: "always|changed",
+		},
+		{
+			name:    "non-string/non-list top-level rejected",
+			yaml:    "web:\n  repo: myrepo\n  compose_file: 123\n",
+			wantErr: "must be a string or a list",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "repos.yaml"), []byte("myrepo:\n  url: https://example.com/repo.git\n"), 0o600); err != nil {
+				t.Fatalf("write repos.yaml: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "stacks.yaml"), []byte(tc.yaml), 0o600); err != nil {
+				t.Fatalf("write stacks.yaml: %v", err)
+			}
+			_, stacks, err := LoadGitOps(dir)
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tc.wantErr)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("error %q does not contain %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadGitOps: %v", err)
+			}
+			if len(stacks) != 1 {
+				t.Fatalf("got %d stacks, want 1", len(stacks))
+			}
+			got := stacks[0].ComposeFiles
+			if len(got) != len(tc.want) {
+				t.Fatalf("ComposeFiles len = %d, want %d (%+v)", len(got), len(tc.want), got)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Errorf("ComposeFiles[%d] = %+v, want %+v", i, got[i], tc.want[i])
+				}
+			}
+		})
 	}
 }

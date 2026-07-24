@@ -16,3 +16,26 @@ demoapp:
   branch: main
   compose_file: compose.yaml
   # pull_policy: always   # override the global --gitops-pull-policy for this stack only
+
+# --- Multiple compose files per stack (optional) ------------------------------
+# compose_file also accepts a LIST of files. They are deployed in list order,
+# one `docker stack deploy` each (NOT merged — each file must be self-contained),
+# and each can carry its own pull_policy. Precedence: file → stack → global.
+# See docs/gitops.md#multiple-compose-files-per-stack.
+#
+# Split into several files for convenience (independent service groups):
+#   demoapp:
+#     repo: demoapp
+#     compose_file:
+#       - compose.yaml
+#       - postgres.yaml
+#
+# Per-file image pull policy — e.g. refresh a :dev app every sync, but don't
+# re-pull a pinned postgres image:
+#   demoapp:
+#     repo: demoapp
+#     compose_file:
+#       - file: compose.yaml
+#         pull_policy: always
+#       - file: postgres.yaml
+#         pull_policy: changed

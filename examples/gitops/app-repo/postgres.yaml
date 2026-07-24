@@ -1,0 +1,22 @@
+# postgres.yaml — an optional SECOND compose file for the demoapp stack.
+# =============================================================================
+# Uncomment the multi-file compose_file block in ../stacks.yaml to deploy this
+# alongside compose.yaml. It is a separate `docker stack deploy` (one per compose
+# file, deployed in order — NOT merged). Each file is deployed as-is, so this one
+# is intentionally self-contained (it relies only on the stack's implicit default
+# network, same as compose.yaml).
+#
+# Why a separate file? To demo a per-file image pull policy: pin postgres to
+# pull_policy: changed while the app image pulls always (the dev :dev-refresh
+# use case). See ../../docs/gitops.md#multiple-compose-files-per-stack.
+# =============================================================================
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: demo
+    deploy:
+      mode: replicated
+      replicas: 1
