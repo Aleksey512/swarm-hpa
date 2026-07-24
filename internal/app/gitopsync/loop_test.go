@@ -915,3 +915,120 @@ func TestLoop_MultiFilePartialFailure(t *testing.T) {
 		t.Errorf("expected a 'deploy' SyncError on mid-stack failure; got %v", rec.syncErrs)
 	}
 }
+
+// --- per-file status tests (v0.6.0 multi-compose UI) ---
+
+// multiFileStack builds a single stack with the given compose-file specs.
+func multiFileStack(name string, specs ...model.ComposeFileSpec) []model.StackConfig {
+	return []model.StackConfig{{Name: name, Repo: "r", Branch: "main", ComposeFiles: specs}}
+}
+
+func TestLoop_MultiFileRecordsPerFileStatus(t *testing.T) {
+	files := map[string][]byte{
+		"app.yaml": []byte("services:\n"),
+		"pg.yaml":  []byte("services:\n"),
+		"mon.yaml": []byte("services:\n"),
+	}
+	git := &fakeGit{revs: []string{"aaa"}, files: files}
+	dep := newFakeDeployer(nil)
+	store := newFakeStatusStore()
+	src, _ := manualTicks()
+	// app=always, pg=changed, mon inherits the global "changed".
+	st := multiFileStack("s",
+		model.ComposeFileSpec{File: "app.yaml", PullPolicy: "always"},
+		model.ComposeFileSpec{File: "pg.yaml", PullPolicy: "changed"},
+		model.ComposeFileSpec{File: "mon.yaml"},
+	)
+	l := New(git, fakeRenderer{}, dep, nil, &fakeRec{}, store, st, "changed", false, false, 1, testLogger(), WithTickSource(src))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = l.Run(ctx, time.Hour); close(done) }()
+	<-dep.ch // app
+	<-dep.ch // pg
+	<-dep.ch // mon
+	got := waitForStatus(t, store, "s")
+	cancel()
+	<-done
+
+	if !got.OK {
+		t.Fatalf("OK=false, want true; stage=%q msg=%q", got.ErrorStage, got.ErrorMessage)
+	}
+	want := []model.StackFileStatus{
+		{File: "app.yaml", PullPolicy: "always", Status: "ok"},
+		{File: "pg.yaml", PullPolicy: "changed", Status: "ok"},
+		{File: "mon.yaml", PullPolicy: "changed", Status: "ok"},
+	}
+	if len(got.Files) != len(want) {
+		t.Fatalf("Files = %+v, want %+v", got.Files, want)
+	}
+	for i, w := range want {
+		if got.Files[i] != w {
+			t.Errorf("Files[%d] = %+v, want %+v", i, got.Files[i], w)
+		}
+	}
+}
+
+func TestLoop_MultiFilePartialFailureStatus(t *testing.T) {
+	files := map[string][]byte{"a.yaml": []byte("services:\n"), "b.yaml": []byte("services:\n"), "c.yaml": []byte("services:\n")}
+	dep := newFakeDeployer([]error{nil, errors.New("b deploy boom"), nil}) // a ok, b fails, c not reached
+	store := newFakeStatusStore()
+	git := &fakeGit{revs: []string{"aaa"}, files: files}
+	src, _ := manualTicks()
+	st := multiFileStack("s",
+		model.ComposeFileSpec{File: "a.yaml"},
+		model.ComposeFileSpec{File: "b.yaml"},
+		model.ComposeFileSpec{File: "c.yaml"},
+	)
+	l := New(git, fakeRenderer{}, dep, nil, &fakeRec{}, store, st, "changed", false, false, 1, testLogger(), WithTickSource(src))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = l.Run(ctx, time.Hour); close(done) }()
+	<-dep.ch // a ok
+	<-dep.ch // b failed
+	got := waitForStatus(t, store, "s")
+	cancel()
+	<-done
+
+	if got.OK || got.ErrorStage != "deploy" {
+		t.Fatalf("OK=%v ErrorStage=%q, want false/deploy", got.OK, got.ErrorStage)
+	}
+	if len(got.Files) != 3 {
+		t.Fatalf("Files = %+v, want 3 entries", got.Files)
+	}
+	if got.Files[0].Status != "ok" {
+		t.Errorf("Files[0].Status = %q, want ok", got.Files[0].Status)
+	}
+	if got.Files[1].Status != "failed" || got.Files[1].Error != "b deploy boom" {
+		t.Errorf("Files[1] = %+v, want failed/\"b deploy boom\"", got.Files[1])
+	}
+	if got.Files[2].Status != "skipped" {
+		t.Errorf("Files[2].Status = %q, want skipped", got.Files[2].Status)
+	}
+}
+
+func TestLoop_PreDeployFailureLeavesFilesEmpty(t *testing.T) {
+	git := &fakeGit{err: errors.New("git down"), files: map[string][]byte{}}
+	store := newFakeStatusStore()
+	src, _ := manualTicks()
+	st := multiFileStack("s",
+		model.ComposeFileSpec{File: "a.yaml"},
+		model.ComposeFileSpec{File: "b.yaml"},
+	)
+	l := New(git, fakeRenderer{}, newFakeDeployer(nil), nil, &fakeRec{}, store, st, "changed", false, false, 1, testLogger(), WithTickSource(src))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = l.Run(ctx, time.Hour); close(done) }()
+	got := waitForStatus(t, store, "s")
+	cancel()
+	<-done
+
+	if got.OK || got.ErrorStage != "git" {
+		t.Fatalf("OK=%v ErrorStage=%q, want false/git", got.OK, got.ErrorStage)
+	}
+	if len(got.Files) != 0 {
+		t.Errorf("Files = %+v, want empty (pre-deploy failure must not populate per-file status)", got.Files)
+	}
+}

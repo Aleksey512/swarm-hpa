@@ -100,6 +100,7 @@ func (h *Handler) buildResponses() []stackResponse {
 			LastSync:        st.LastSync,
 			DeployCount:     st.DeployCount,
 			DesiredReplicas: st.DesiredReplicas,
+			Files:           toFileResps(st.Files),
 		}
 		if h.live != nil && len(st.DesiredReplicas) > 0 {
 			ctx, cancel := context.WithTimeout(context.Background(), liveTimeout)
@@ -131,6 +132,7 @@ type stackResponse struct {
 	LastSync        time.Time         `json:"last_sync"`
 	DeployCount     uint64            `json:"deploy_count"`
 	DesiredReplicas map[string]uint64 `json:"desired_replicas,omitempty"`
+	Files           []fileStatusResp  `json:"files,omitempty"`
 	Drift           []driftItem       `json:"drift,omitempty"`
 	Drifted         bool              `json:"drifted"`
 	DriftError      string            `json:"drift_error,omitempty"`
@@ -149,6 +151,30 @@ func toDriftItems(in []model.ServiceDrift) []driftItem {
 	out := make([]driftItem, len(in))
 	for i, d := range in {
 		out[i] = driftItem{Service: d.Service, Desired: d.Desired, Live: d.Live, Drifted: d.Drifted}
+	}
+	return out
+}
+
+// fileStatusResp is the JSON shape for one compose file's deploy outcome in a
+// (possibly multi-file) stack — detached from model.StackFileStatus so the HTTP
+// layer owns its serialization. Status is ""|ok|failed|skipped (see the model's
+// state machine).
+type fileStatusResp struct {
+	File       string `json:"file"`
+	PullPolicy string `json:"pull_policy,omitempty"`
+	Status     string `json:"status"`
+	Error      string `json:"error,omitempty"`
+}
+
+// toFileResps maps the stored per-file status to the JSON shape (nil in, nil out
+// so an empty slice stays absent via omitempty).
+func toFileResps(in []model.StackFileStatus) []fileStatusResp {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]fileStatusResp, len(in))
+	for i, f := range in {
+		out[i] = fileStatusResp{File: f.File, PullPolicy: f.PullPolicy, Status: f.Status, Error: f.Error}
 	}
 	return out
 }

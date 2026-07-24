@@ -195,6 +195,7 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 		stage    string // "" = no error this pass; otherwise the failing stage
 		errMsg   string
 		deployed bool
+		files    []model.StackFileStatus // per-file deploy outcome of this tick (v0.6.0 multi-compose), for the /stacks UI
 	)
 	defer func() {
 		if r := recover(); r != nil {
@@ -202,7 +203,7 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 			l.recorder.SyncError("sync")
 			stage, errMsg = "sync", fmt.Sprintf("panic: %v", r)
 		}
-		l.recordStatus(st.Name, rev, stage, errMsg, deployed)
+		l.recordStatus(st.Name, rev, stage, errMsg, deployed, files)
 	}()
 	log := l.logger.With(slog.String("stack", st.Name))
 
@@ -324,6 +325,26 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 	// prune services absent from a later file, so the files compose one stack.
 	// They are NOT transactional — a mid-stack failure leaves earlier files
 	// already applied (logged below).
+	// Seed the per-file deploy outcomes for the /stacks UI (v0.6.0 multi-compose):
+	// each entry carries its file path and effective pull policy (file → stack →
+	// global) up front; the deploy loop below flips Status to ok/failed/skipped as
+	// it goes. files stays nil if the stack never reached deploy this tick (a
+	// git/render/secrets failure) — the stack-level ErrorStage already says deploy
+	// wasn't reached.
+	files = make([]model.StackFileStatus, len(st.ComposeFiles))
+	for i, spec := range st.ComposeFiles {
+		p, _ := effectivePullPolicy(spec, st.PullPolicy, l.pullPolicy)
+		files[i] = model.StackFileStatus{File: spec.File, PullPolicy: p}
+	}
+	// markFailedFrom records that file i failed and every later file was not
+	// reached (sequential deploys stop at the first failure), for the /stacks UI.
+	markFailedFrom := func(i int, because string) {
+		files[i].Status = "failed"
+		files[i].Error = because
+		for j := i + 1; j < len(files); j++ {
+			files[j].Status = "skipped"
+		}
+	}
 	log.Info("gitops: deploying stack", "revision", rev, "files", len(st.ComposeFiles))
 	for i, spec := range st.ComposeFiles {
 		// Rotate file-backed configs/secrets by content hash for THIS file so
@@ -331,6 +352,7 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 		if l.autoRotate {
 			resolver := func(rel string) ([]byte, error) { return l.git.ReadFile(ctx, st, rel) }
 			if n, rerr := compose.ApplyRotation(maps[i], st.Name, filepath.Dir(spec.File), resolver); rerr != nil {
+				markFailedFrom(i, rerr.Error())
 				log.Error("gitops: rotation failed", "file", spec.File, "err", rerr)
 				l.recorder.SyncError("rotate")
 				stage, errMsg = "rotate", rerr.Error()
@@ -351,6 +373,7 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 			PullPolicy: effPolicy,
 			ComposeDir: composeDir,
 		}); err != nil {
+			markFailedFrom(i, err.Error())
 			log.Warn("gitops: deploy failed mid-stack; earlier files already applied (additive deploy, not rolled back)",
 				"file", spec.File, "applied_before", i, "err", err)
 			l.recorder.SyncError("deploy")
@@ -358,6 +381,7 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 			stage, errMsg = "deploy", err.Error()
 			return
 		}
+		files[i].Status = "ok"
 	}
 	l.recorder.DeployApplied(st.Name)
 	l.markDeploy(st.Name, rev, true)
@@ -392,7 +416,7 @@ func (l *Loop) incDeploy(name string) {
 // store is wired). OK is true when no stage failed this pass. DesiredReplicas and
 // DeployCount come from the cached counters so they stay stable on unchanged
 // skips (which skip render/deploy).
-func (l *Loop) recordStatus(name, rev, stage, errMsg string, deployed bool) {
+func (l *Loop) recordStatus(name, rev, stage, errMsg string, deployed bool, files []model.StackFileStatus) {
 	if l.statusStore == nil {
 		return
 	}
@@ -410,6 +434,7 @@ func (l *Loop) recordStatus(name, rev, stage, errMsg string, deployed bool) {
 		LastSync:        time.Now(),
 		DeployCount:     count,
 		DesiredReplicas: desired,
+		Files:           files,
 	})
 	l.logger.Debug("gitops: status updated", "stack", name, "ok", stage == "", "stage", stage)
 }

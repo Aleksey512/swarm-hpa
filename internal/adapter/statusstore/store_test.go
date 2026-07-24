@@ -86,3 +86,38 @@ func TestStore_ConcurrentAccess(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestStore_FilesDeepCopy(t *testing.T) {
+	s := New(testLogger())
+	files := []model.StackFileStatus{
+		{File: "a.yaml", Status: "ok"},
+		{File: "b.yaml", Status: "failed", Error: "boom"},
+	}
+	s.SetStatus("a", model.StackStatus{Files: files})
+	// Mutate the caller's slice after SetStatus — the store must be unaffected.
+	files[0].Status = "skipped"
+	files[1].Error = "mutated"
+
+	got := s.Snapshot()
+	if len(got[0].Files) != 2 {
+		t.Fatalf("Files len = %d, want 2", len(got[0].Files))
+	}
+	if got[0].Files[0].Status != "ok" || got[0].Files[1].Error != "boom" {
+		t.Errorf("SetStatus did not copy input Files: %+v", got[0].Files)
+	}
+	// Mutate the snapshot's slice — a fresh snapshot must be unaffected.
+	got[0].Files[0].Status = "mutated"
+	again := s.Snapshot()
+	if again[0].Files[0].Status != "ok" {
+		t.Errorf("Snapshot did not deep-copy Files: got %q, want ok", again[0].Files[0].Status)
+	}
+}
+
+func TestStore_NilFilesStaysNil(t *testing.T) {
+	s := New(testLogger())
+	s.SetStatus("a", model.StackStatus{OK: true})
+	got := s.Snapshot()
+	if got[0].Files != nil {
+		t.Errorf("nil Files should stay nil, got %v", got[0].Files)
+	}
+}

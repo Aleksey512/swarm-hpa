@@ -187,3 +187,71 @@ func (l *liveCounter) StackServices(_ context.Context, stack string) ([]model.St
 	l.n++
 	return l.fn(stack)
 }
+
+func TestHandler_StacksJSON_Files(t *testing.T) {
+	store := &fakeStore{items: []model.StackStatus{{
+		Name: "web",
+		OK:   true,
+		Files: []model.StackFileStatus{
+			{File: "app.yaml", PullPolicy: "always", Status: "ok"},
+			{File: "postgres.yaml", PullPolicy: "changed", Status: "failed", Error: "image pull denied"},
+		},
+	}}}
+	h := New(store, nil, testLogger())
+
+	rr := do(h, http.MethodGet, "/stacks")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	var got struct {
+		Stacks []struct {
+			Name  string `json:"name"`
+			Files []struct {
+				File       string `json:"file"`
+				PullPolicy string `json:"pull_policy"`
+				Status     string `json:"status"`
+				Error      string `json:"error"`
+			} `json:"files"`
+		} `json:"stacks"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Stacks) != 1 || len(got.Stacks[0].Files) != 2 {
+		t.Fatalf("got stacks/files = %+v", got.Stacks)
+	}
+	f0 := got.Stacks[0].Files[0]
+	if f0.File != "app.yaml" || f0.PullPolicy != "always" || f0.Status != "ok" {
+		t.Errorf("files[0] = %+v, want app.yaml/always/ok", f0)
+	}
+	f1 := got.Stacks[0].Files[1]
+	if f1.File != "postgres.yaml" || f1.Status != "failed" || f1.Error != "image pull denied" {
+		t.Errorf("files[1] = %+v, want postgres.yaml/failed/image pull denied", f1)
+	}
+}
+
+func TestHandler_UI_Files(t *testing.T) {
+	store := &fakeStore{items: []model.StackStatus{{
+		Name:         "web",
+		OK:           false,
+		ErrorStage:   "deploy",
+		ErrorMessage: "image pull denied",
+		Files: []model.StackFileStatus{
+			{File: "app.yaml", PullPolicy: "always", Status: "ok"},
+			{File: "postgres.yaml", PullPolicy: "changed", Status: "failed", Error: "image pull denied"},
+			{File: "monitor.yaml", Status: "skipped"},
+		},
+	}}}
+	h := New(store, nil, testLogger())
+
+	rr := do(h, http.MethodGet, "/")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	for _, want := range []string{"app.yaml", "postgres.yaml", "monitor.yaml", "always", "changed", "failed: image pull denied", "skipped"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("HTML body missing %q; body=%q", want, body)
+		}
+	}
+}

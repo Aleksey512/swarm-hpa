@@ -271,6 +271,8 @@ when `--gitops` is enabled.
   `ok` is `false` with `error_stage`/`error_message` when the last sync failed
   (git, render, secrets, rotate, or deploy). `desired_replicas` is the
   non-autoscaled, non-global replica snapshot taken at the last render.
+  For a [multi-file stack](#multiple-compose-files-per-stack), each entry also
+  carries a `files` array — see [Per-file status](#per-file-status-multi-file-stacks).
 - **`GET /`** (or **`GET /ui`**) — a read-only HTML table of the same data
   (refresh to update; no client-side JavaScript).
 
@@ -287,6 +289,36 @@ when `--gitops` is enabled.
 
 A failed Swarm read for one stack degrades just that stack's `drift` to a
 `drift_error` note — it never turns the whole response into a 5xx.
+
+### Per-file status (multi-file stacks)
+
+A [multi-file stack](#multiple-compose-files-per-stack) is deployed as one
+`docker stack deploy` per compose file, in order. The status surface reflects
+that per file, so a **partial failure is visible** (not collapsed into a single
+stack-level error). Each entry's `files` array, in deploy order:
+
+```json
+"files": [
+  {"file": "app.yaml", "pull_policy": "always", "status": "ok"},
+  {"file": "postgres.yaml", "pull_policy": "changed", "status": "failed", "error": "image pull denied"},
+  {"file": "monitor.yaml", "pull_policy": "changed", "status": "skipped"}
+]
+```
+
+- `status` is `ok` (deployed this sync), `failed` (with `error`), `skipped` (an
+  earlier file failed, so this one was never reached), or pending (empty — the
+  stack failed before the deploy stage).
+- `pull_policy` is the effective policy used for that file's deploy
+  (precedence file → stack → global) — this is where the per-file pull split
+  (e.g. app `always`, postgres `changed`) shows up.
+
+The HTML table has a **files** column with one line per file (path · pull policy ·
+status). On a partial failure the failing file is red with its error, earlier
+files are green (already applied — Swarm deploys are additive and **not**
+transactional, so they are not rolled back), and later files are grey (`skipped`).
+The stack-level status still reads the failing stage. Single-file stacks show one
+line. `files` is empty (the UI shows `—`) when the stack failed before deploy or
+has never synced.
 
 ## Migrating from swarm-cd
 

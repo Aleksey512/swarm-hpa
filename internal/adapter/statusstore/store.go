@@ -40,6 +40,7 @@ func New(logger *slog.Logger) *Store {
 func (s *Store) SetStatus(name string, status model.StackStatus) {
 	status.Name = name
 	status.DesiredReplicas = copyReplicas(status.DesiredReplicas)
+	status.Files = copyFiles(status.Files)
 	s.mu.Lock()
 	s.items[name] = status
 	s.mu.Unlock()
@@ -54,6 +55,7 @@ func (s *Store) Snapshot() []model.StackStatus {
 	out := make([]model.StackStatus, 0, len(s.items))
 	for _, st := range s.items {
 		st.DesiredReplicas = copyReplicas(st.DesiredReplicas)
+		st.Files = copyFiles(st.Files)
 		out = append(out, st)
 	}
 	s.mu.RUnlock()
@@ -70,5 +72,17 @@ func copyReplicas(m map[string]uint64) map[string]uint64 {
 	}
 	cp := make(map[string]uint64, len(m))
 	maps.Copy(cp, m)
+	return cp
+}
+
+// copyFiles returns a detached copy of f (nil in, nil out) so stored and returned
+// status values share no slice with callers. StackFileStatus is a value type (no
+// pointers/maps), so a shallow element copy is a full deep copy.
+func copyFiles(f []model.StackFileStatus) []model.StackFileStatus {
+	if f == nil {
+		return nil
+	}
+	cp := make([]model.StackFileStatus, len(f))
+	copy(cp, f)
 	return cp
 }

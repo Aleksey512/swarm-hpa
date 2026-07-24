@@ -14,6 +14,7 @@
     .ok { color: #1a7f37; font-weight: 600; }
     .err { color: #cf222e; }
     .drift { color: #9a6700; font-weight: 600; }
+    .skip { color: #888; }
     small { color: #888; }
     a { color: #0969da; }
   </style>
@@ -25,7 +26,7 @@
   <p><small>No stacks synced yet.</small></p>
   {{else}}
   <table>
-    <tr><th>stack</th><th>revision</th><th>status</th><th>last sync</th><th>deploys</th><th>desired / drift</th></tr>
+    <tr><th>stack</th><th>revision</th><th>status</th><th>last sync</th><th>deploys</th><th>files</th><th>desired / drift</th></tr>
     {{range .}}
     <tr>
       <td><b>{{.Name}}</b></td>
@@ -36,6 +37,14 @@
       </td>
       <td>{{if .LastSync.IsZero}}-{{else}}{{.LastSync.Format "2006-01-02 15:04:05"}}{{end}}</td>
       <td>{{.DeployCount}}</td>
+      <td>
+        {{if not .Files}}<small>—</small>
+        {{else}}{{range .Files}}<code>{{.File}}</code>{{if .PullPolicy}} <small>{{.PullPolicy}}</small>{{end}}
+        {{if eq .Status "ok"}} <span class="ok">ok</span>
+        {{else if eq .Status "failed"}} <span class="err">failed: {{.Error}}</span>
+        {{else if eq .Status "skipped"}} <span class="skip">skipped</span>
+        {{else}} <small>pending</small>{{end}}<br>{{end}}{{end}}
+      </td>
       <td>
         {{if .DriftError}}<span class="err">drift unavailable: {{.DriftError}}</span>
         {{else if .Drifted}}<span class="drift">{{range .Drift}}{{if .Drifted}}<code>{{.Service}}</code> {{.Desired}}→{{.Live}}; {{end}}{{end}}</span>
