@@ -39,6 +39,10 @@
 - [x] **Per-stack image pull policy** — add a `pull_policy: always|changed` field to `stacks.yaml` that overrides the global `--gitops-pull-policy` for a single stack; validated (`always|changed`) and threaded through the sync loop into `DeployOptions`, falling back to the global default when unset. Backward compatible (omit the field → current global behavior unchanged). *(delivers the per-stack override on top of the v0.4.0 global-only pull policy; the "global + per-stack" capability is now complete)*
 - [x] **Expanded self-observability metrics** — surface what the daemon *observes and decides*, not just action counters: per-service gauges for current replicas, desired replicas, the observed metric value, and last decision (scale-up/scale-down/hold); per-service cooldown / in-cooldown state; a stuck-pending task-count gauge per service; and per-stack drift gauges (desired vs live replicas) so drift is alertable beyond the `/stacks` UI.
 
+## v0.6.0
+
+- [x] **Multiple compose files per stack + per-file pull policy** — a stack may declare several `compose_file`s, deployed in list order (one `docker stack deploy` each; additive — Swarm does not prune). Each file can carry its own `pull_policy` (precedence: file → stack → global), enabling a per-file pull split (e.g. a dev app pulls `always` while postgres pulls `changed`). `compose_file` is polymorphic and backward compatible (scalar string | list of strings | list of `{file, pull_policy}` objects; mixed lists allowed). Files are deployed as-is (not merged), so each must be self-contained. No port/adapter changes — the feature flows through the existing `DeployOpts.PullPolicy`.
+
 ## Completed
 
 | Milestone | Date |
@@ -65,3 +69,4 @@
 | swarm-cd migration & docs (v0.4.0) | 2026-07-03 |
 | Per-stack image pull policy (v0.5.0) | 2026-07-14 |
 | Expanded self-observability metrics (v0.5.0) | 2026-07-15 |
+| Multiple compose files per stack + per-file pull policy (v0.6.0) | 2026-07-24 |
