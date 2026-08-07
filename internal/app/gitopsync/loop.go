@@ -239,37 +239,57 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 		}
 	}
 
-	// Render every compose file in declaration order. Each file is deployed AS-IS
-	// (no merging), so each must be self-contained (declare its own networks/
-	// volumes and any top-level secrets/configs it references). Order is preserved
-	// for the per-file deploy loop below — list order = deploy order.
-	maps := make([]map[string]any, 0, len(st.ComposeFiles))
-	for i, spec := range st.ComposeFiles {
-		composeBytes, rerr := l.git.ReadFile(ctx, st, spec.File)
-		if rerr != nil {
-			log.Error("gitops: read compose failed", "file", spec.File, "err", rerr)
-			l.recorder.SyncError("render")
-			stage, errMsg = "render", rerr.Error()
-			return
+	// Render every merge group in declaration order. A group is one
+	// ComposeFileSpec: its base file plus the overrides merged into the SAME
+	// deploy. Every file of every group is rendered against the same Values.
+	//
+	// Two orders are preserved here and both are load-bearing: groups deploy in
+	// list order (separate, additive deploys), and the documents WITHIN a group
+	// keep base-then-overrides order because that is what docker/cli's merge uses
+	// to decide which value wins.
+	groups := make([]renderedGroup, 0, len(st.ComposeFiles))
+	totalFiles := 0
+	for gi, spec := range st.ComposeFiles {
+		paths := spec.AllFiles()
+		docs := make([]renderedDoc, 0, len(paths))
+		for di, path := range paths {
+			composeBytes, rerr := l.git.ReadFile(ctx, st, path)
+			if rerr != nil {
+				log.Error("gitops: read compose failed", "file", path, "group", gi, "err", rerr)
+				l.recorder.SyncError("render")
+				stage, errMsg = "render", rerr.Error()
+				return
+			}
+			composeMap, rerr := l.renderer.Render(composeBytes, valuesBytes)
+			if rerr != nil {
+				log.Error("gitops: render failed", "file", path, "group", gi, "err", rerr)
+				l.recorder.SyncError("render")
+				stage, errMsg = "render", rerr.Error()
+				return
+			}
+			log.Debug("gitops: rendered compose file",
+				"file", path, "group", gi, "index_in_group", di, "is_override", di > 0,
+				"groups_total", len(st.ComposeFiles))
+			docs = append(docs, renderedDoc{path: path, compose: composeMap})
 		}
-		composeMap, rerr := l.renderer.Render(composeBytes, valuesBytes)
-		if rerr != nil {
-			log.Error("gitops: render failed", "file", spec.File, "err", rerr)
-			l.recorder.SyncError("render")
-			stage, errMsg = "render", rerr.Error()
-			return
-		}
-		log.Debug("gitops: rendered compose file",
-			"file", spec.File, "index", i, "files_total", len(st.ComposeFiles))
-		maps = append(maps, composeMap)
+		effPolicy, source := effectivePullPolicy(spec, st.PullPolicy, l.pullPolicy)
+		log.Debug("gitops: merge group resolved",
+			"base", spec.File, "overrides", spec.Overrides, "files", len(docs),
+			"pull_policy", effPolicy, "source", source)
+		totalFiles += len(docs)
+		groups = append(groups, renderedGroup{spec: spec, docs: docs})
 	}
 
 	// Snapshot the non-autoscaled, non-global desired replicas for the drift
 	// check (computed only on a successful render; stable across unchanged skips).
-	// Unioned across all files — a service lives in exactly one file.
+	// Unioned across all groups — a service lives in exactly one group.
 	desiredSnap := make(map[string]uint64)
-	for _, m := range maps {
-		for svc, n := range desiredReplicas(m) {
+	for gi, g := range groups {
+		groupDesired, excluded := desiredReplicasGroup(g.maps())
+		log.Debug("gitops: desired snapshot",
+			"group", gi, "base", g.spec.File, "services", len(groupDesired),
+			"excluded_autoscaled", excluded)
+		for svc, n := range groupDesired {
 			desiredSnap[svc] = n
 		}
 	}
@@ -282,9 +302,11 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 	// Dry-run short-circuits BEFORE decrypt: decrypt writes plaintext to disk (a
 	// side effect), so dry-run must not prepare or deploy.
 	if l.dryRun {
-		for _, spec := range st.ComposeFiles {
-			eff, _ := effectivePullPolicy(spec, st.PullPolicy, l.pullPolicy)
-			log.Info("gitops: dry-run; would deploy compose file", "file", spec.File, "pull_policy", eff)
+		for _, g := range groups {
+			eff, _ := effectivePullPolicy(g.spec, st.PullPolicy, l.pullPolicy)
+			log.Info("gitops: dry-run; would deploy compose group",
+				"file", g.spec.File, "overrides", g.spec.Overrides, "files", len(g.docs),
+				"pull_policy", eff)
 		}
 		log.Info("gitops: dry-run; would decrypt/rotate/deploy stack", "revision", rev)
 		l.recorder.SyncSuppressed("dry_run")
@@ -292,21 +314,24 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 	}
 
 	// Decrypt sops-encrypted secret files in place (no-op when none; skipped when
-	// no decrypter is wired). Discovery UNIONS file-backed secrets across ALL
-	// compose files (each resolved against its own file's directory) so every
-	// secret referenced anywhere in the stack is decrypted once, before any deploy.
+	// no decrypter is wired). Discovery UNIONS file-backed secrets across every
+	// DOCUMENT of every group — each resolved against ITS OWN file's directory,
+	// because an override may live elsewhere than its base — so every secret
+	// referenced anywhere in the stack is decrypted once, before any deploy.
 	sopsFiles := st.SopsFiles
 	if st.SopsSecretsDiscovery {
 		discovered := make([]string, 0)
-		for i, spec := range st.ComposeFiles {
-			files, derr := compose.DiscoverSecretFiles(maps[i], filepath.Dir(spec.File))
-			if derr != nil {
-				log.Error("gitops: secret discovery failed", "file", spec.File, "err", derr)
-				l.recorder.SyncError("secrets")
-				stage, errMsg = "secrets", derr.Error()
-				return
+		for gi, g := range groups {
+			for _, d := range g.docs {
+				secretFiles, derr := compose.DiscoverSecretFiles(d.compose, filepath.Dir(d.path))
+				if derr != nil {
+					log.Error("gitops: secret discovery failed", "file", d.path, "group", gi, "err", derr)
+					l.recorder.SyncError("secrets")
+					stage, errMsg = "secrets", derr.Error()
+					return
+				}
+				discovered = append(discovered, secretFiles...)
 			}
-			discovered = append(discovered, files...)
 		}
 		sopsFiles = discovered
 	}
@@ -320,23 +345,24 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 		}
 	}
 
-	// Deploy each compose file in order, with that file's effective pull policy
-	// (file → stack → global). Sequential deploys are ADDITIVE: Swarm does not
-	// prune services absent from a later file, so the files compose one stack.
-	// They are NOT transactional — a mid-stack failure leaves earlier files
-	// already applied (logged below).
-	// Seed the per-file deploy outcomes for the /stacks UI (v0.6.0 multi-compose):
-	// each entry carries its file path and effective pull policy (file → stack →
-	// global) up front; the deploy loop below flips Status to ok/failed/skipped as
-	// it goes. files stays nil if the stack never reached deploy this tick (a
-	// git/render/secrets failure) — the stack-level ErrorStage already says deploy
-	// wasn't reached.
-	files = make([]model.StackFileStatus, len(st.ComposeFiles))
-	for i, spec := range st.ComposeFiles {
-		p, _ := effectivePullPolicy(spec, st.PullPolicy, l.pullPolicy)
-		files[i] = model.StackFileStatus{File: spec.File, PullPolicy: p}
+	// Deploy each merge group in order, with that group's effective pull policy
+	// (file → stack → global). A group is ONE `docker stack deploy` carrying all
+	// of its documents as separate -c flags; docker/cli merges them. Deploys
+	// BETWEEN groups are ADDITIVE: Swarm does not prune services absent from a
+	// later group, so the groups compose one stack. They are NOT transactional —
+	// a mid-stack failure leaves earlier groups already applied (logged below).
+	//
+	// Seed the per-group deploy outcomes for the /stacks UI: each entry carries
+	// its base file, its overrides and the effective pull policy up front; the
+	// deploy loop below flips Status to ok/failed/skipped as it goes. files stays
+	// nil if the stack never reached deploy this tick (a git/render/secrets
+	// failure) — the stack-level ErrorStage already says deploy wasn't reached.
+	files = make([]model.StackFileStatus, len(groups))
+	for i, g := range groups {
+		p, _ := effectivePullPolicy(g.spec, st.PullPolicy, l.pullPolicy)
+		files[i] = model.StackFileStatus{File: g.spec.File, Overrides: g.spec.Overrides, PullPolicy: p}
 	}
-	// markFailedFrom records that file i failed and every later file was not
+	// markFailedFrom records that group i failed and every later group was not
 	// reached (sequential deploys stop at the first failure), for the /stacks UI.
 	markFailedFrom := func(i int, because string) {
 		files[i].Status = "failed"
@@ -345,37 +371,51 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 			files[j].Status = "skipped"
 		}
 	}
-	log.Info("gitops: deploying stack", "revision", rev, "files", len(st.ComposeFiles))
-	for i, spec := range st.ComposeFiles {
-		// Rotate file-backed configs/secrets by content hash for THIS file so
-		// Swarm picks up changes (no-op when autoRotate is disabled).
+	worktree := l.git.WorktreePath(st)
+	log.Info("gitops: deploying stack", "revision", rev, "groups", len(groups), "files", totalFiles)
+	for i, g := range groups {
+		// Rotate file-backed configs/secrets by content hash for EACH document of
+		// the group so Swarm picks up changes (no-op when autoRotate is disabled).
+		// Per-document rotation is correct under docker/cli's merge: rotation only
+		// sets `name` on the top-level configs:/secrets: object, so the rotated
+		// name travels with the very object that carries the winning `file:` key.
+		// Each document resolves its file paths against its OWN directory.
 		if l.autoRotate {
 			resolver := func(rel string) ([]byte, error) { return l.git.ReadFile(ctx, st, rel) }
-			if n, rerr := compose.ApplyRotation(maps[i], st.Name, filepath.Dir(spec.File), resolver); rerr != nil {
-				markFailedFrom(i, rerr.Error())
-				log.Error("gitops: rotation failed", "file", spec.File, "err", rerr)
-				l.recorder.SyncError("rotate")
-				stage, errMsg = "rotate", rerr.Error()
-				return
-			} else if n > 0 {
-				log.Debug("gitops: rotated objects", "file", spec.File, "count", n)
+			for _, d := range g.docs {
+				n, rerr := compose.ApplyRotation(d.compose, st.Name, filepath.Dir(d.path), resolver)
+				if rerr != nil {
+					markFailedFrom(i, rerr.Error())
+					log.Error("gitops: rotation failed", "file", d.path, "group", i, "err", rerr)
+					l.recorder.SyncError("rotate")
+					stage, errMsg = "rotate", rerr.Error()
+					return
+				}
+				if n > 0 {
+					log.Debug("gitops: rotated objects", "file", d.path, "group", i, "count", n)
+				}
 			}
 		}
 
-		effPolicy, source := effectivePullPolicy(spec, st.PullPolicy, l.pullPolicy)
-		// Co-locate the temp compose with the source compose file so its relative
-		// configs:/secrets: paths resolve against the repo worktree, not /tmp
-		// (see patch 2026-07-06-14.11).
-		composeDir := filepath.Join(l.git.WorktreePath(st), filepath.Dir(spec.File))
-		log.Debug("gitops: deploying file",
-			"file", spec.File, "pull_policy", effPolicy, "source", source)
-		if err := l.deployer.Deploy(ctx, st.Name, maps[i], port.DeployOpts{
-			PullPolicy: effPolicy,
-			ComposeDir: composeDir,
-		}); err != nil {
+		effPolicy, source := effectivePullPolicy(g.spec, st.PullPolicy, l.pullPolicy)
+		// Co-locate each temp compose with ITS OWN source file so that document's
+		// relative configs:/secrets: paths resolve against the repo worktree, not
+		// /tmp (see patch 2026-07-06-14.11). An override may live in a different
+		// directory than the base, hence a directory per document.
+		docs := make([]port.ComposeDoc, len(g.docs))
+		for j, d := range g.docs {
+			docs[j] = port.ComposeDoc{
+				Map: d.compose,
+				Dir: filepath.Join(worktree, filepath.Dir(d.path)),
+			}
+		}
+		log.Debug("gitops: deploying merge group",
+			"base", g.spec.File, "overrides", g.spec.Overrides, "files", len(docs),
+			"group", i, "pull_policy", effPolicy, "source", source)
+		if err := l.deployer.Deploy(ctx, st.Name, docs, port.DeployOpts{PullPolicy: effPolicy}); err != nil {
 			markFailedFrom(i, err.Error())
-			log.Warn("gitops: deploy failed mid-stack; earlier files already applied (additive deploy, not rolled back)",
-				"file", spec.File, "applied_before", i, "err", err)
+			log.Warn("gitops: deploy failed mid-stack; earlier groups already applied (additive deploy, not rolled back)",
+				"file", g.spec.File, "overrides", g.spec.Overrides, "applied_before", i, "err", err)
 			l.recorder.SyncError("deploy")
 			l.markDeploy(st.Name, rev, false)
 			stage, errMsg = "deploy", err.Error()
@@ -387,8 +427,35 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 	l.markDeploy(st.Name, rev, true)
 	l.incDeploy(st.Name)
 	deployed = true
-	log.Debug("gitops: all files deployed", "count", len(st.ComposeFiles))
-	log.Info("gitops: stack synced", "revision", rev, "files", len(st.ComposeFiles))
+	log.Debug("gitops: all groups deployed", "groups", len(groups), "files", totalFiles)
+	log.Info("gitops: stack synced", "revision", rev, "groups", len(groups), "files", totalFiles)
+}
+
+// renderedDoc is ONE rendered compose document, paired with the repo-relative
+// path it came from. The path is kept because rotation, secret discovery and the
+// deploy temp-file directory must each resolve against the document's OWN
+// directory — an override may live elsewhere than the base it overrides.
+type renderedDoc struct {
+	path    string
+	compose map[string]any
+}
+
+// renderedGroup is one ComposeFileSpec rendered: the base document first, then
+// its overrides, in `-c` order. It is deployed by a single `docker stack deploy`
+// whose documents docker/cli merges last-wins.
+type renderedGroup struct {
+	spec model.ComposeFileSpec
+	docs []renderedDoc
+}
+
+// maps returns the group's compose maps in `-c` order, for the transforms that
+// need the merged view of the whole group (carry-forward, drift snapshot).
+func (g renderedGroup) maps() []map[string]any {
+	out := make([]map[string]any, len(g.docs))
+	for i, d := range g.docs {
+		out[i] = d.compose
+	}
+	return out
 }
 
 func (l *Loop) markDeploy(name, rev string, ok bool) {
@@ -479,85 +546,129 @@ func effectivePullPolicy(spec model.ComposeFileSpec, stackPolicy, def string) (p
 	}
 }
 
-// desiredReplicas returns the non-autoscaled, non-global service→replica snapshot
-// from a rendered compose map, for drift detection. Autoscaled services
-// (swarm.autoscaler.enabled=true) and global-mode services are excluded — their
-// replica divergence is intentional, not drift. Services without an explicit
-// replicas count are skipped (unknown desired). Mirrors the detection in
-// adapter/stackdeploy/carryforward.go (kept private per package; not shared across
-// the app→adapter boundary).
-func desiredReplicas(compose map[string]any) map[string]uint64 {
-	services, ok := compose["services"].(map[string]any)
-	if !ok {
-		return nil
-	}
-	out := make(map[string]uint64)
-	for name, raw := range services {
-		svc, ok := raw.(map[string]any)
-		if !ok {
+// desiredReplicasGroup returns the non-autoscaled, non-global service→replica
+// snapshot of one MERGE GROUP, for drift detection, plus how many services were
+// excluded because the merged view marks them autoscaler-owned.
+//
+// The snapshot must be computed over the merged view, not per document, because
+// docker/cli merges a group last-wins and an override can change the verdict:
+//   - an override that sets deploy.replicas must WIN over the base value;
+//   - an override that adds swarm.autoscaler.enabled=true must EXCLUDE the
+//     service (autoscaler-owned divergence is intentional, not drift) — and one
+//     that sets it to false must include a service the base had excluded;
+//   - an override that flips the service to mode: global must exclude it.
+//
+// A naive per-document union gets all three wrong. Services without an explicit
+// replicas count anywhere in the group are skipped (unknown desired).
+func desiredReplicasGroup(docs []map[string]any) (desired map[string]uint64, excludedAutoscaled int) {
+	merged := mergeGroupServices(docs)
+	out := make(map[string]uint64, len(merged))
+	for name, ms := range merged {
+		if ms.global {
 			continue
 		}
-		if isGlobalService(svc) {
+		if ms.labels[config.LabelEnabled] == "true" {
+			excludedAutoscaled++ // autoscaler-owned: the HPA controls its replicas
 			continue
 		}
-		if labelIsTrue(svc, config.LabelEnabled) {
-			continue // autoscaler-owned: the HPA controls its replicas
-		}
-		replicas, ok := replicasOf(svc)
-		if !ok {
+		if !ms.hasReplicas {
 			continue
 		}
-		out[name] = replicas
+		out[name] = ms.replicas
 	}
 	if len(out) == 0 {
-		return nil
+		return nil, excludedAutoscaled
 	}
-	return out
+	return out, excludedAutoscaled
 }
 
-// isGlobalService reports whether a compose service is mode: global (top-level or
-// under deploy:). Mirrors adapter/stackdeploy.isGlobalMode.
-func isGlobalService(svc map[string]any) bool {
-	if d, ok := svc["deploy"].(map[string]any); ok {
-		if m, _ := d["mode"].(string); m == "global" {
-			return true
-		}
-	}
-	if m, _ := svc["mode"].(string); m == "global" {
-		return true
-	}
-	return false
+// mergedGroupService is the effective view of one service across a merge group,
+// following docker/cli's last-wins merge. Mirrors the detection in
+// adapter/stackdeploy/carryforward.go (kept private per package; not shared
+// across the app→adapter boundary).
+type mergedGroupService struct {
+	labels      map[string]string
+	global      bool
+	replicas    uint64
+	hasReplicas bool
 }
 
-// labelIsTrue reports whether the given compose label is "true", looking under
-// deploy.labels then the service's top-level labels, in either the map or the list
-// (- "key=value") form. Mirrors adapter/stackdeploy.serviceLabels for one key.
-func labelIsTrue(svc map[string]any, key string) bool {
-	if d, ok := svc["deploy"].(map[string]any); ok {
-		if readLabel(d["labels"], key) == "true" {
-			return true
+// mergeGroupServices folds a group's documents into the per-service view above.
+// Documents without a services map contribute nothing; a key a document omits
+// leaves the previous document's value in place.
+func mergeGroupServices(docs []map[string]any) map[string]*mergedGroupService {
+	merged := make(map[string]*mergedGroupService)
+	for _, doc := range docs {
+		services, ok := doc["services"].(map[string]any)
+		if !ok {
+			continue
 		}
-	}
-	return readLabel(svc["labels"], key) == "true"
-}
-
-// readLabel reads one key from a compose labels value (map or list form); "" if
-// absent.
-func readLabel(labels any, key string) string {
-	switch t := labels.(type) {
-	case map[string]any:
-		if v, ok := t[key]; ok {
-			return fmt.Sprint(v)
-		}
-	case []any:
-		for _, item := range t {
-			s := fmt.Sprint(item)
-			if k, v, ok := strings.Cut(s, "="); ok && k == key {
-				return v
+		for name, raw := range services {
+			svc, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			ms, seen := merged[name]
+			if !seen {
+				ms = &mergedGroupService{labels: map[string]string{}}
+				merged[name] = ms
+			}
+			for k, v := range flatServiceLabels(svc) {
+				ms.labels[k] = v
+			}
+			if mode, ok := explicitServiceMode(svc); ok {
+				ms.global = mode == "global"
+			}
+			if r, ok := replicasOf(svc); ok {
+				ms.replicas, ms.hasReplicas = r, true
 			}
 		}
 	}
-	return ""
+	return merged
+}
+
+// explicitServiceMode returns a compose service's declared mode (deploy.mode
+// takes precedence over the top-level mode) and whether one was declared at all.
+// Only an explicit mode overrides what an earlier document of the group set.
+func explicitServiceMode(svc map[string]any) (string, bool) {
+	if d, ok := svc["deploy"].(map[string]any); ok {
+		if m, ok := d["mode"].(string); ok && m != "" {
+			return m, true
+		}
+	}
+	if m, ok := svc["mode"].(string); ok && m != "" {
+		return m, true
+	}
+	return "", false
+}
+
+// flatServiceLabels flattens a compose service's deploy.labels and top-level
+// labels into one map, handling both the map form (key: value) and the list form
+// (- "key=value"). Deploy labels take precedence over service-level labels.
+func flatServiceLabels(svc map[string]any) map[string]string {
+	out := map[string]string{}
+	collect := func(labels any) {
+		switch t := labels.(type) {
+		case map[string]any:
+			for k, v := range t {
+				out[k] = fmt.Sprint(v)
+			}
+		case []any:
+			for _, item := range t {
+				s := fmt.Sprint(item)
+				if k, v, ok := strings.Cut(s, "="); ok {
+					out[k] = v
+				} else {
+					out[s] = "true"
+				}
+			}
+		}
+	}
+	collect(svc["labels"])
+	if d, ok := svc["deploy"].(map[string]any); ok {
+		collect(d["labels"]) // deploy.labels win over service-level labels
+	}
+	return out
 }
 
 // replicasOf reads a compose service's replica count from deploy.replicas, falling

@@ -29,10 +29,10 @@ func WithRetry(deploy DeployFunc, logger *slog.Logger) DeployFunc {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return func(ctx context.Context, name, composeFile, pullPolicy string) error {
+	return func(ctx context.Context, name string, composeFiles []string, pullPolicy string) error {
 		var lastErr error
 		for attempt := 1; attempt <= deployMaxAttempts; attempt++ {
-			err := deploy(ctx, name, composeFile, pullPolicy)
+			err := deploy(ctx, name, composeFiles, pullPolicy)
 			if err == nil {
 				if attempt > 1 {
 					logger.Info("stackdeploy: deploy succeeded after retry",

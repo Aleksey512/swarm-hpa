@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -253,5 +254,77 @@ func TestHandler_UI_Files(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("HTML body missing %q; body=%q", want, body)
 		}
+	}
+}
+
+// A merge group's overrides ride along with its base file in the JSON, in `-c`
+// order, and the key is absent for a plain single-file deploy.
+func TestHandler_StacksJSON_Overrides(t *testing.T) {
+	store := &fakeStore{items: []model.StackStatus{{
+		Name: "monitoring",
+		OK:   true,
+		Files: []model.StackFileStatus{
+			{File: "base.yaml", Overrides: []string{"prod.yaml", "env.override.yaml"}, PullPolicy: "always", Status: "ok"},
+			{File: "traefik.yaml", PullPolicy: "changed", Status: "ok"},
+		},
+	}}}
+	h := New(store, nil, testLogger())
+
+	rr := do(h, http.MethodGet, "/stacks")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	raw := rr.Body.String()
+	var got struct {
+		Stacks []struct {
+			Files []struct {
+				File      string   `json:"file"`
+				Overrides []string `json:"overrides"`
+			} `json:"files"`
+		} `json:"stacks"`
+	}
+	if err := json.NewDecoder(strings.NewReader(raw)).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Stacks) != 1 || len(got.Stacks[0].Files) != 2 {
+		t.Fatalf("got stacks/files = %+v", got.Stacks)
+	}
+	want := []string{"prod.yaml", "env.override.yaml"}
+	if !reflect.DeepEqual(got.Stacks[0].Files[0].Overrides, want) {
+		t.Errorf("files[0].overrides = %v, want %v (in -c order)", got.Stacks[0].Files[0].Overrides, want)
+	}
+	if got.Stacks[0].Files[1].Overrides != nil {
+		t.Errorf("files[1].overrides = %v, want absent for a plain single-file deploy", got.Stacks[0].Files[1].Overrides)
+	}
+	// omitempty must actually drop the key, not emit "overrides":null.
+	if strings.Contains(raw, `"overrides":null`) {
+		t.Errorf("JSON emits a null overrides key; want it omitted. body=%q", raw)
+	}
+}
+
+// The UI lists a group's override files under its base file, HTML-escaped.
+func TestHandler_UI_Overrides(t *testing.T) {
+	store := &fakeStore{items: []model.StackStatus{{
+		Name: "monitoring",
+		OK:   true,
+		Files: []model.StackFileStatus{
+			{File: "base.yaml", Overrides: []string{"prod.yaml", "<script>.yaml"}, Status: "ok"},
+		},
+	}}}
+	h := New(store, nil, testLogger())
+
+	rr := do(h, http.MethodGet, "/")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "prod.yaml") {
+		t.Errorf("HTML body missing the override file; body=%q", body)
+	}
+	if strings.Contains(body, "<script>.yaml") {
+		t.Errorf("override path was not HTML-escaped; body=%q", body)
+	}
+	if !strings.Contains(body, "&lt;script&gt;.yaml") {
+		t.Errorf("HTML body missing the escaped override path; body=%q", body)
 	}
 }

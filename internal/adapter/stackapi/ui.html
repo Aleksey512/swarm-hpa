@@ -15,6 +15,8 @@
     .err { color: #cf222e; }
     .drift { color: #9a6700; font-weight: 600; }
     .skip { color: #888; }
+    /* override files merged into the row's base file via extra -c flags */
+    .ovr { color: #888; padding-left: 1.2rem; }
     small { color: #888; }
     a { color: #0969da; }
   </style>
@@ -43,7 +45,8 @@
         {{if eq .Status "ok"}} <span class="ok">ok</span>
         {{else if eq .Status "failed"}} <span class="err">failed: {{.Error}}</span>
         {{else if eq .Status "skipped"}} <span class="skip">skipped</span>
-        {{else}} <small>pending</small>{{end}}<br>{{end}}{{end}}
+        {{else}} <small>pending</small>{{end}}
+        {{range .Overrides}}<br><span class="ovr">+ <code>{{.}}</code></span>{{end}}<br>{{end}}{{end}}
       </td>
       <td>
         {{if .DriftError}}<span class="err">drift unavailable: {{.DriftError}}</span>

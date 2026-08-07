@@ -6,9 +6,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"reflect"
+	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/goccy/go-yaml"
 
 	"github.com/Aleksey512/swarm-hpa/internal/core/model"
 	"github.com/Aleksey512/swarm-hpa/internal/core/port"
@@ -63,22 +68,26 @@ type fakeDeployer struct {
 	ch       chan string
 	policies map[string]string // stack name → PullPolicy received in DeployOpts
 	// pullPolicies records the PullPolicy of EVERY Deploy call, in order. Needed
-	// to assert per-file policy order for multi-file stacks: the name-keyed
+	// to assert per-group policy order for multi-file stacks: the name-keyed
 	// policies map above only keeps the LAST call for a given stack.
 	pullPolicies []string
+	// docs records the compose documents of EVERY Deploy call, in order — one
+	// entry per call, each holding that merge group's documents in -c order.
+	docs [][]port.ComposeDoc
 }
 
 func newFakeDeployer(errs []error) *fakeDeployer {
 	return &fakeDeployer{errs: errs, ch: make(chan string, 8), policies: map[string]string{}}
 }
 
-func (f *fakeDeployer) Deploy(_ context.Context, name string, _ map[string]any, opts port.DeployOpts) error {
+func (f *fakeDeployer) Deploy(_ context.Context, name string, docs []port.ComposeDoc, opts port.DeployOpts) error {
 	f.mu.Lock()
 	idx := f.calls
 	f.calls++
 	errs := f.errs
 	f.policies[name] = opts.PullPolicy
 	f.pullPolicies = append(f.pullPolicies, opts.PullPolicy)
+	f.docs = append(f.docs, append([]port.ComposeDoc(nil), docs...))
 	f.mu.Unlock()
 	var err error
 	if idx < len(errs) {
@@ -86,6 +95,16 @@ func (f *fakeDeployer) Deploy(_ context.Context, name string, _ map[string]any, 
 	}
 	f.ch <- name
 	return err
+}
+
+// docsSeq returns the per-call compose documents (a copy of the outer slice), so
+// callers can assert how many -c files each deploy carried and in which order.
+func (f *fakeDeployer) docsSeq() [][]port.ComposeDoc {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([][]port.ComposeDoc, len(f.docs))
+	copy(out, f.docs)
+	return out
 }
 
 func (f *fakeDeployer) callCount() int {
@@ -370,7 +389,7 @@ type trackingDeployer struct {
 	failStack    string
 }
 
-func (d *trackingDeployer) Deploy(_ context.Context, stack string, _ map[string]any, _ port.DeployOpts) error {
+func (d *trackingDeployer) Deploy(_ context.Context, stack string, _ []port.ComposeDoc, _ port.DeployOpts) error {
 	repo := ""
 	if d.repoOf != nil {
 		repo = d.repoOf(stack)
@@ -963,7 +982,9 @@ func TestLoop_MultiFileRecordsPerFileStatus(t *testing.T) {
 		t.Fatalf("Files = %+v, want %+v", got.Files, want)
 	}
 	for i, w := range want {
-		if got.Files[i] != w {
+		// reflect.DeepEqual, not ==: StackFileStatus carries an Overrides slice
+		// and is no longer comparable.
+		if !reflect.DeepEqual(got.Files[i], w) {
 			t.Errorf("Files[%d] = %+v, want %+v", i, got.Files[i], w)
 		}
 	}
@@ -1030,5 +1051,411 @@ func TestLoop_PreDeployFailureLeavesFilesEmpty(t *testing.T) {
 	}
 	if len(got.Files) != 0 {
 		t.Errorf("Files = %+v, want empty (pre-deploy failure must not populate per-file status)", got.Files)
+	}
+}
+
+// --- compose overrides: merge groups (one `docker stack deploy` per group) ---
+
+// yamlRenderer parses the compose bytes it is handed, so these tests can assert
+// on per-DOCUMENT content. fakeRenderer returns a fixed map regardless of input,
+// which cannot distinguish a base file from its overrides.
+type yamlRenderer struct{}
+
+func (yamlRenderer) Render(compose, _ []byte) (map[string]any, error) {
+	var m map[string]any
+	if err := yaml.Unmarshal(compose, &m); err != nil {
+		return nil, err
+	}
+	if m == nil {
+		m = map[string]any{}
+	}
+	return m, nil
+}
+
+// imageOf reads services.<name>.image from a deployed compose document.
+func imageOf(t *testing.T, doc port.ComposeDoc, service string) string {
+	t.Helper()
+	services, ok := doc.Map["services"].(map[string]any)
+	if !ok {
+		t.Fatalf("document has no services map: %+v", doc.Map)
+	}
+	svc, ok := services[service].(map[string]any)
+	if !ok {
+		t.Fatalf("document has no service %q: %+v", service, services)
+	}
+	return fmt.Sprint(svc["image"])
+}
+
+// runOneSync starts the loop, waits for wantDeploys Deploy calls, then stops it.
+// Returns the recorded status (nil store → zero value).
+func runOneSync(t *testing.T, l *Loop, dep *fakeDeployer, wantDeploys int) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = l.Run(ctx, time.Hour); close(done) }()
+	for i := 0; i < wantDeploys; i++ {
+		select {
+		case <-dep.ch:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for deploy %d/%d", i+1, wantDeploys)
+		}
+	}
+	cancel()
+	<-done
+}
+
+// The core of the feature: a base file plus two overrides is ONE deploy carrying
+// three compose documents, in declaration order (that order is what decides
+// docker/cli's merge precedence).
+func TestLoop_MergeGroupDeploysOnceWithAllDocuments(t *testing.T) {
+	git := &fakeGit{revs: []string{"aaa"}, files: map[string][]byte{
+		"base.yaml": []byte("services:\n  web:\n    image: nginx\n"),
+		"prod.yaml": []byte("services:\n  web:\n    image: nginx:prod\n"),
+		"env.yaml":  []byte("services:\n  web:\n    image: nginx:env\n"),
+	}}
+	dep := newFakeDeployer(nil)
+	src, _ := manualTicks()
+	st := multiFileStack("s", model.ComposeFileSpec{
+		File:      "base.yaml",
+		Overrides: []string{"prod.yaml", "env.yaml"},
+	})
+	l := New(git, yamlRenderer{}, dep, nil, &fakeRec{}, nil, st, "changed", false, false, 1, testLogger(), WithTickSource(src))
+
+	runOneSync(t, l, dep, 1)
+
+	if got := dep.callCount(); got != 1 {
+		t.Fatalf("Deploy calls = %d, want 1 (a merge group is a SINGLE docker stack deploy)", got)
+	}
+	docs := dep.docsSeq()[0]
+	if len(docs) != 3 {
+		t.Fatalf("deploy carried %d documents, want 3 (-c per file)", len(docs))
+	}
+	for i, want := range []string{"nginx", "nginx:prod", "nginx:env"} {
+		if got := imageOf(t, docs[i], "web"); got != want {
+			t.Errorf("document %d image = %q, want %q (base-then-overrides order not preserved)", i, got, want)
+		}
+	}
+}
+
+// A stack may mix both mechanisms: a merge group (one deploy, several -c) and a
+// plain entry (its own additive deploy). Groups deploy in declaration order.
+func TestLoop_MergeGroupAndPlainEntryDeploySeparately(t *testing.T) {
+	git := &fakeGit{revs: []string{"aaa"}, files: map[string][]byte{
+		"base.yaml":    []byte("services:\n  web:\n    image: nginx\n"),
+		"prod.yaml":    []byte("services:\n  web:\n    image: nginx:prod\n"),
+		"traefik.yaml": []byte("services:\n  lb:\n    image: traefik\n"),
+	}}
+	dep := newFakeDeployer(nil)
+	src, _ := manualTicks()
+	st := multiFileStack("s",
+		model.ComposeFileSpec{File: "base.yaml", Overrides: []string{"prod.yaml"}},
+		model.ComposeFileSpec{File: "traefik.yaml"},
+	)
+	l := New(git, yamlRenderer{}, dep, nil, &fakeRec{}, nil, st, "changed", false, false, 1, testLogger(), WithTickSource(src))
+
+	runOneSync(t, l, dep, 2)
+
+	calls := dep.docsSeq()
+	if len(calls) != 2 {
+		t.Fatalf("Deploy calls = %d, want 2 (group + plain entry)", len(calls))
+	}
+	if len(calls[0]) != 2 {
+		t.Errorf("group deploy carried %d documents, want 2", len(calls[0]))
+	}
+	if len(calls[1]) != 1 {
+		t.Errorf("plain deploy carried %d documents, want 1", len(calls[1]))
+	}
+	if got := imageOf(t, calls[1][0], "lb"); got != "traefik" {
+		t.Errorf("second deploy = %q, want the plain traefik entry", got)
+	}
+}
+
+// v0.6.0 regression: entries WITHOUT overrides must still be separate additive
+// deploys of one document each — the new mechanism must not silently merge them.
+func TestLoop_MultiEntryWithoutOverridesStaysOneDocumentPerDeploy(t *testing.T) {
+	git := &fakeGit{revs: []string{"aaa"}, files: map[string][]byte{
+		"a.yaml": []byte("services:\n  a:\n    image: a\n"),
+		"b.yaml": []byte("services:\n  b:\n    image: b\n"),
+	}}
+	dep := newFakeDeployer(nil)
+	src, _ := manualTicks()
+	st := multiFileStack("s",
+		model.ComposeFileSpec{File: "a.yaml"},
+		model.ComposeFileSpec{File: "b.yaml"},
+	)
+	l := New(git, yamlRenderer{}, dep, nil, &fakeRec{}, nil, st, "changed", false, false, 1, testLogger(), WithTickSource(src))
+
+	runOneSync(t, l, dep, 2)
+
+	for i, docs := range dep.docsSeq() {
+		if len(docs) != 1 {
+			t.Errorf("deploy %d carried %d documents, want 1 (no overrides declared)", i, len(docs))
+		}
+	}
+}
+
+// The pull policy is per GROUP — one --resolve-image per deploy — and keeps the
+// file → stack → global precedence with overrides present.
+func TestLoop_MergeGroupPullPolicyPrecedence(t *testing.T) {
+	git := &fakeGit{revs: []string{"aaa"}, files: map[string][]byte{
+		"a.yaml":     []byte("services:\n"),
+		"a.ovr.yaml": []byte("services:\n"),
+		"b.yaml":     []byte("services:\n"),
+	}}
+	dep := newFakeDeployer(nil)
+	src, _ := manualTicks()
+	st := []model.StackConfig{{
+		Name: "s", Repo: "r", Branch: "main",
+		PullPolicy: "changed", // stack level
+		ComposeFiles: []model.ComposeFileSpec{
+			{File: "a.yaml", Overrides: []string{"a.ovr.yaml"}, PullPolicy: "always"}, // group overrides the stack
+			{File: "b.yaml"}, // inherits the stack policy
+		},
+	}}
+	l := New(git, yamlRenderer{}, dep, nil, &fakeRec{}, nil, st, "always", false, false, 1, testLogger(), WithTickSource(src))
+
+	runOneSync(t, l, dep, 2)
+
+	got := dep.pullPolicySeq()
+	want := []string{"always", "changed"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("pull policies = %v, want %v (group → stack → global)", got, want)
+	}
+}
+
+// Dry-run must short-circuit a merge group before decrypt, exactly as it does for
+// a single file: no deploy, no plaintext written to the worktree.
+func TestLoop_MergeGroupDryRunSkipsDecryptAndDeploy(t *testing.T) {
+	git := &fakeGit{revs: []string{"aaa"}, files: map[string][]byte{
+		"base.yaml": []byte("services:\n"),
+		"prod.yaml": []byte("services:\n"),
+	}}
+	dep := newFakeDeployer(nil)
+	sops := &fakeSops{}
+	rec := &fakeRec{}
+	src, tick := manualTicks()
+	st := []model.StackConfig{{
+		Name: "s", Repo: "r", Branch: "main",
+		ComposeFiles: []model.ComposeFileSpec{{File: "base.yaml", Overrides: []string{"prod.yaml"}}},
+		SopsFiles:    []string{"secrets/tls.crt"},
+	}}
+	l := New(git, yamlRenderer{}, dep, sops, rec, nil, st, "changed", true, true, 1, testLogger(), WithTickSource(src))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = l.Run(ctx, time.Hour); close(done) }()
+	tick <- time.Now()
+	time.Sleep(80 * time.Millisecond)
+	cancel()
+	<-done
+
+	if c := dep.callCount(); c != 0 {
+		t.Fatalf("dry-run must not deploy a merge group; call count = %d", c)
+	}
+	if sops.totalFiles() != 0 {
+		t.Fatalf("dry-run must not decrypt; decrypted %d files", sops.totalFiles())
+	}
+}
+
+// Secret discovery resolves each document's file-backed secrets against ITS OWN
+// directory — an override commonly lives in a different directory than its base,
+// and resolving everything against the base would look for the wrong paths.
+func TestLoop_MergeGroupSopsDiscoveryResolvesPerDocumentDirectory(t *testing.T) {
+	git := &fakeGit{revs: []string{"aaa"}, files: map[string][]byte{
+		"base/compose.yaml": []byte("secrets:\n  tls:\n    file: certs/tls.crt\nservices:\n"),
+		"env/prod.yaml":     []byte("secrets:\n  db:\n    file: creds/db.txt\nservices:\n"),
+	}}
+	dep := newFakeDeployer(nil)
+	sops := &fakeSops{}
+	src, _ := manualTicks()
+	st := []model.StackConfig{{
+		Name: "s", Repo: "r", Branch: "main",
+		ComposeFiles:         []model.ComposeFileSpec{{File: "base/compose.yaml", Overrides: []string{"env/prod.yaml"}}},
+		SopsSecretsDiscovery: true,
+	}}
+	l := New(git, yamlRenderer{}, dep, sops, &fakeRec{}, nil, st, "changed", false, false, 1, testLogger(), WithTickSource(src))
+
+	runOneSync(t, l, dep, 1)
+
+	sops.mu.Lock()
+	defer sops.mu.Unlock()
+	if len(sops.calls) != 1 {
+		t.Fatalf("sops.Decrypt calls = %d, want 1", len(sops.calls))
+	}
+	got := append([]string(nil), sops.calls[0]...)
+	sort.Strings(got)
+	want := []string{"base/certs/tls.crt", "env/creds/db.txt"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("discovered secrets = %v, want %v (each resolved against its own document's dir)", got, want)
+	}
+}
+
+// Rotation runs per document with that document's own directory, so a config in
+// an override directory is hashed from the right file.
+func TestLoop_MergeGroupRotationRunsPerDocument(t *testing.T) {
+	git := &fakeGit{revs: []string{"aaa"}, files: map[string][]byte{
+		"base/compose.yaml":  []byte("configs:\n  app:\n    file: conf/app.ini\nservices:\n"),
+		"env/prod.yaml":      []byte("configs:\n  extra:\n    file: conf/extra.ini\nservices:\n"),
+		"base/conf/app.ini":  []byte("base-content"),
+		"env/conf/extra.ini": []byte("override-content"),
+	}}
+	dep := newFakeDeployer(nil)
+	src, _ := manualTicks()
+	st := multiFileStack("s", model.ComposeFileSpec{File: "base/compose.yaml", Overrides: []string{"env/prod.yaml"}})
+	l := New(git, yamlRenderer{}, dep, nil, &fakeRec{}, nil, st, "changed", false, true, 1, testLogger(), WithTickSource(src))
+
+	runOneSync(t, l, dep, 1)
+
+	docs := dep.docsSeq()[0]
+	if len(docs) != 2 {
+		t.Fatalf("deploy carried %d documents, want 2", len(docs))
+	}
+	for i, objName := range []string{"app", "extra"} {
+		configs, ok := docs[i].Map["configs"].(map[string]any)
+		if !ok {
+			t.Fatalf("document %d has no configs map", i)
+		}
+		obj := configs[objName].(map[string]any)
+		name := fmt.Sprint(obj["name"])
+		if !strings.HasPrefix(name, "s-"+objName+"-") {
+			t.Errorf("document %d config %q rotated name = %q, want prefix %q", i, objName, name, "s-"+objName+"-")
+		}
+	}
+}
+
+// A render failure on an OVERRIDE file fails the whole stack at the render stage;
+// nothing is deployed (the group is all-or-nothing before deploy).
+func TestLoop_OverrideRenderFailureStopsBeforeDeploy(t *testing.T) {
+	git := &fakeGit{revs: []string{"aaa"}, files: map[string][]byte{
+		"base.yaml": []byte("services:\n"),
+		"bad.yaml":  []byte("services: [this: is: not: valid\n"),
+	}}
+	dep := newFakeDeployer(nil)
+	store := newFakeStatusStore()
+	src, _ := manualTicks()
+	st := multiFileStack("s", model.ComposeFileSpec{File: "base.yaml", Overrides: []string{"bad.yaml"}})
+	l := New(git, yamlRenderer{}, dep, nil, &fakeRec{}, store, st, "changed", false, false, 1, testLogger(), WithTickSource(src))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = l.Run(ctx, time.Hour); close(done) }()
+	got := waitForStatus(t, store, "s")
+	cancel()
+	<-done
+
+	if got.OK || got.ErrorStage != "render" {
+		t.Fatalf("OK=%v ErrorStage=%q, want false/render", got.OK, got.ErrorStage)
+	}
+	if c := dep.callCount(); c != 0 {
+		t.Errorf("Deploy calls = %d, want 0 (an unrenderable override must not deploy the base alone)", c)
+	}
+}
+
+// The /stacks status reports one entry per GROUP, carrying its overrides, and a
+// failing group still skips the groups after it.
+func TestLoop_StatusReportsOverridesAndGroupFailure(t *testing.T) {
+	git := &fakeGit{revs: []string{"aaa"}, files: map[string][]byte{
+		"base.yaml":   []byte("services:\n"),
+		"prod.yaml":   []byte("services:\n"),
+		"second.yaml": []byte("services:\n"),
+		"third.yaml":  []byte("services:\n"),
+	}}
+	dep := newFakeDeployer([]error{nil, errors.New("group 2 boom")})
+	store := newFakeStatusStore()
+	src, _ := manualTicks()
+	st := multiFileStack("s",
+		model.ComposeFileSpec{File: "base.yaml", Overrides: []string{"prod.yaml"}, PullPolicy: "always"},
+		model.ComposeFileSpec{File: "second.yaml"},
+		model.ComposeFileSpec{File: "third.yaml"},
+	)
+	l := New(git, yamlRenderer{}, dep, nil, &fakeRec{}, store, st, "changed", false, false, 1, testLogger(), WithTickSource(src))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = l.Run(ctx, time.Hour); close(done) }()
+	<-dep.ch // group 1 ok
+	<-dep.ch // group 2 fails
+	got := waitForStatus(t, store, "s")
+	cancel()
+	<-done
+
+	want := []model.StackFileStatus{
+		{File: "base.yaml", Overrides: []string{"prod.yaml"}, PullPolicy: "always", Status: "ok"},
+		{File: "second.yaml", PullPolicy: "changed", Status: "failed", Error: "group 2 boom"},
+		{File: "third.yaml", PullPolicy: "changed", Status: "skipped"},
+	}
+	if !reflect.DeepEqual(got.Files, want) {
+		t.Errorf("Files = %+v,\nwant %+v", got.Files, want)
+	}
+}
+
+// Drift is computed over the MERGED view of a group: an override's replicas win,
+// and an override that opts a service into autoscaling removes it from drift.
+func TestLoop_DesiredSnapshotUsesMergedGroupView(t *testing.T) {
+	git := &fakeGit{revs: []string{"aaa"}, files: map[string][]byte{
+		"base.yaml": []byte(
+			"services:\n" +
+				"  worker:\n    deploy:\n      replicas: 2\n" +
+				"  web:\n    deploy:\n      replicas: 3\n"),
+		"prod.yaml": []byte(
+			"services:\n" +
+				"  worker:\n    deploy:\n      replicas: 5\n" +
+				"  web:\n    deploy:\n      labels:\n        swarm.autoscaler.enabled: \"true\"\n"),
+	}}
+	dep := newFakeDeployer(nil)
+	store := newFakeStatusStore()
+	src, _ := manualTicks()
+	st := multiFileStack("s", model.ComposeFileSpec{File: "base.yaml", Overrides: []string{"prod.yaml"}})
+	l := New(git, yamlRenderer{}, dep, nil, &fakeRec{}, store, st, "changed", false, false, 1, testLogger(), WithTickSource(src))
+
+	runOneSync(t, l, dep, 1)
+	got := waitForStatus(t, store, "s")
+
+	want := map[string]uint64{"worker": 5}
+	if !reflect.DeepEqual(got.DesiredReplicas, want) {
+		t.Errorf("DesiredReplicas = %v, want %v (override replicas must win; a service the override opts into autoscaling is not drift)",
+			got.DesiredReplicas, want)
+	}
+}
+
+// The drift snapshot must resolve a deploy.labels-vs-top-level-labels conflict
+// the SAME way stackdeploy's carry-forward does (deploy.labels win — those are
+// the SERVICE labels Swarm stores and the daemon reads at runtime). If the two
+// ever diverge, carry-forward and drift disagree about who owns a service's
+// replicas, and a service is both "autoscaler-owned" and "drifted".
+func TestLoop_DeployLabelsBeatTopLevelLabelsInDriftSnapshot(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		deployValue string
+		topValue    string
+		wantDesired map[string]uint64 // nil = excluded from drift (autoscaler-owned)
+	}{
+		{name: "deploy enables, top-level disables", deployValue: "true", topValue: "false", wantDesired: nil},
+		{
+			name: "deploy disables, top-level enables", deployValue: "false", topValue: "true",
+			wantDesired: map[string]uint64{"web": 3},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			compose := "services:\n" +
+				"  web:\n" +
+				"    labels:\n      swarm.autoscaler.enabled: \"" + tc.topValue + "\"\n" +
+				"    deploy:\n      replicas: 3\n" +
+				"      labels:\n        swarm.autoscaler.enabled: \"" + tc.deployValue + "\"\n"
+			git := &fakeGit{revs: []string{"aaa"}, files: map[string][]byte{"compose.yaml": []byte(compose)}}
+			dep := newFakeDeployer(nil)
+			store := newFakeStatusStore()
+			src, _ := manualTicks()
+			l := New(git, yamlRenderer{}, dep, nil, &fakeRec{}, store, stacks("s", "compose.yaml"),
+				"changed", false, false, 1, testLogger(), WithTickSource(src))
+
+			runOneSync(t, l, dep, 1)
+			got := waitForStatus(t, store, "s")
+
+			if !reflect.DeepEqual(got.DesiredReplicas, tc.wantDesired) {
+				t.Errorf("DesiredReplicas = %v, want %v (deploy.labels must win over top-level labels)",
+					got.DesiredReplicas, tc.wantDesired)
+			}
+		})
 	}
 }

@@ -32,17 +32,29 @@ func NewDockerCli(logger *slog.Logger) (*command.DockerCli, error) {
 // DockerCLIDeploy returns a DeployFunc that runs `docker stack deploy` via the
 // docker/cli cobra command — parity with swarm-cd
 // (--detach --with-registry-auth --resolve-image <pullPolicy>).
+//
+// Every compose file of the merge group is passed as its own -c flag, in order:
+// `deploy ... -c base.yml -c override.yml -c another.override.yml <stack>`. This
+// is the Swarm-native equivalent of compose's unsupported `include:` — docker/cli
+// merges the documents itself, later -c winning per key, so the daemon never
+// implements compose merge semantics. Preserving the slice order is therefore
+// required for correctness, not cosmetics.
 func DockerCLIDeploy(dockerCli *command.DockerCli) DeployFunc {
-	return func(ctx context.Context, name, composeFile, pullPolicy string) error {
-		cmd := stack.NewStackCommand(dockerCli) //nolint:staticcheck // SA1019: docker/cli deprecates direct cobra imports, but there is no programmatic deploy API — matches swarm-cd; a future native granular deploy removes this
-		cmd.SetArgs([]string{
+	return func(ctx context.Context, name string, composeFiles []string, pullPolicy string) error {
+		args := make([]string, 0, 5+2*len(composeFiles))
+		args = append(args,
 			"deploy",
 			"--detach",
 			"--with-registry-auth",
 			"--resolve-image", pullPolicy,
-			"-c", composeFile,
-			name,
-		})
+		)
+		for _, f := range composeFiles {
+			args = append(args, "-c", f)
+		}
+		args = append(args, name)
+
+		cmd := stack.NewStackCommand(dockerCli) //nolint:staticcheck // SA1019: docker/cli deprecates direct cobra imports, but there is no programmatic deploy API — matches swarm-cd; a future native granular deploy removes this
+		cmd.SetArgs(args)
 		cmd.SilenceErrors = true
 		cmd.SilenceUsage = true
 		return cmd.ExecuteContext(ctx)

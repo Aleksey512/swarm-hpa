@@ -155,18 +155,20 @@ func toDriftItems(in []model.ServiceDrift) []driftItem {
 	return out
 }
 
-// fileStatusResp is the JSON shape for one compose file's deploy outcome in a
+// fileStatusResp is the JSON shape for one merge group's deploy outcome in a
 // (possibly multi-file) stack — detached from model.StackFileStatus so the HTTP
-// layer owns its serialization. Status is ""|ok|failed|skipped (see the model's
+// layer owns its serialization. One entry = one `docker stack deploy`: File plus
+// the Overrides merged into it. Status is ""|ok|failed|skipped (see the model's
 // state machine).
 type fileStatusResp struct {
-	File       string `json:"file"`
-	PullPolicy string `json:"pull_policy,omitempty"`
-	Status     string `json:"status"`
-	Error      string `json:"error,omitempty"`
+	File       string   `json:"file"`
+	Overrides  []string `json:"overrides,omitempty"`
+	PullPolicy string   `json:"pull_policy,omitempty"`
+	Status     string   `json:"status"`
+	Error      string   `json:"error,omitempty"`
 }
 
-// toFileResps maps the stored per-file status to the JSON shape (nil in, nil out
+// toFileResps maps the stored per-group status to the JSON shape (nil in, nil out
 // so an empty slice stays absent via omitempty).
 func toFileResps(in []model.StackFileStatus) []fileStatusResp {
 	if len(in) == 0 {
@@ -174,7 +176,13 @@ func toFileResps(in []model.StackFileStatus) []fileStatusResp {
 	}
 	out := make([]fileStatusResp, len(in))
 	for i, f := range in {
-		out[i] = fileStatusResp{File: f.File, PullPolicy: f.PullPolicy, Status: f.Status, Error: f.Error}
+		out[i] = fileStatusResp{
+			File:       f.File,
+			Overrides:  f.Overrides,
+			PullPolicy: f.PullPolicy,
+			Status:     f.Status,
+			Error:      f.Error,
+		}
 	}
 	return out
 }

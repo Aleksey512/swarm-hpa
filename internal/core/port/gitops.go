@@ -39,28 +39,48 @@ type StackStateReader interface {
 	StackServices(ctx context.Context, stack string) ([]model.StackService, error)
 }
 
-// DeployOpts carries per-deploy knobs. PullPolicy is the --resolve-image mode:
-// "always" (re-resolve every deploy) or "changed" (only when the digest changed).
+// ComposeDoc is ONE rendered compose document of a merge group — one `-c` flag
+// of the resulting `docker stack deploy`.
 //
-// ComposeDir is the on-disk directory of the original compose file. The temp
-// compose the deployer writes for `docker stack deploy` is placed there so the
-// relative configs:/secrets: file paths inside the compose resolve against the
-// same directory they resolve against for the original file (NOT against the OS
-// temp dir, which lives outside the repo worktree). Empty falls back to the OS
-// temp dir — the historical behavior, used by tests and any caller that does not
-// care about relative file paths.
-type DeployOpts struct {
-	PullPolicy string
-	ComposeDir string
+// Dir is the on-disk directory of the document's OWN source compose file. The
+// temp compose the deployer writes is placed there so the relative
+// configs:/secrets: file paths inside that document resolve against the same
+// directory they resolve against for its source file (NOT against the OS temp
+// dir, which lives outside the repo worktree — see patch 2026-07-06-14.11).
+// Because an override may live in a different directory than the base, this is
+// per DOCUMENT and not per deploy. Empty falls back to the OS temp dir — the
+// historical behavior, used by tests and any caller that does not care about
+// relative file paths.
+type ComposeDoc struct {
+	Map map[string]any
+	Dir string
 }
 
-// StackDeployer applies one rendered stack to Swarm. Implementations MUST be
-// autoscaler-aware: the replicas of any service opted in via
-// swarm.autoscaler.enabled=true are carried forward from live state (clamped to
-// [min,max]) and never overwritten from the compose file — that is what dissolves
-// the swarm-cd↔HPA replicas conflict.
+// DeployOpts carries per-deploy knobs. PullPolicy is the --resolve-image mode:
+// "always" (re-resolve every deploy) or "changed" (only when the digest changed).
+// It is per DEPLOY, i.e. per merge group: `docker stack deploy` accepts exactly
+// one --resolve-image no matter how many -c flags it is given.
+type DeployOpts struct {
+	PullPolicy string
+}
+
+// StackDeployer applies one rendered merge group to Swarm as a SINGLE
+// `docker stack deploy` with one -c per document: docs[0] is the base compose
+// file and docs[1:] are its overrides, in declaration order. docker/cli performs
+// the merge, later documents winning per key — the daemon never merges compose
+// itself.
+//
+// Implementations MUST be autoscaler-aware: the replicas of any service opted in
+// via swarm.autoscaler.enabled=true are carried forward from live state (clamped
+// to [min,max]) and never overwritten from the compose file — that is what
+// dissolves the swarm-cd↔HPA replicas conflict. For a multi-document group that
+// detection MUST run against the MERGED view of the group, not document by
+// document: the autoscaler labels may appear only in the base file while an
+// override re-declares the service, or only in an override. Applying
+// carry-forward per document would miss both cases and let a deploy clobber a
+// replica count the autoscaler just set.
 type StackDeployer interface {
-	Deploy(ctx context.Context, name string, compose map[string]any, opts DeployOpts) error
+	Deploy(ctx context.Context, name string, docs []ComposeDoc, opts DeployOpts) error
 }
 
 // SecretDecrypter decrypts sops-encrypted files IN PLACE (overwrites the file at
