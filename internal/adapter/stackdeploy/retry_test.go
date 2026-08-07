@@ -47,14 +47,22 @@ func TestWithRetry(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			calls := 0
-			fake := func(_ context.Context, _, _, _ string) error {
+			var gotFiles []string
+			fake := func(_ context.Context, _ string, composeFiles []string, _ string) error {
 				calls++
+				gotFiles = composeFiles
 				if calls <= len(c.updateErrs) {
 					return c.updateErrs[calls-1]
 				}
 				return nil
 			}
-			err := WithRetry(fake, discardLog())(context.Background(), "stk", "compose.yaml", "changed")
+			// A merge group is retried whole: every -c file must be re-passed
+			// unchanged on each attempt.
+			files := []string{"base.yaml", "prod.yaml"}
+			err := WithRetry(fake, discardLog())(context.Background(), "stk", files, "changed")
+			if len(gotFiles) != len(files) {
+				t.Errorf("deploy got %d compose files, want %d", len(gotFiles), len(files))
+			}
 			if c.wantErr && err == nil {
 				t.Fatal("expected error, got nil")
 			}
@@ -71,13 +79,13 @@ func TestWithRetry(t *testing.T) {
 // A context that expires during the inter-attempt backoff must abort the retry loop
 // rather than burning all attempts.
 func TestWithRetryHonorsContextCancellation(t *testing.T) {
-	fake := func(_ context.Context, _, _, _ string) error {
+	fake := func(_ context.Context, _ string, _ []string, _ string) error {
 		return errOutOfSequence // always conflict → forces a backoff wait
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
-	err := WithRetry(fake, discardLog())(ctx, "stk", "compose.yaml", "changed")
+	err := WithRetry(fake, discardLog())(ctx, "stk", []string{"compose.yaml"}, "changed")
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("expected context.DeadlineExceeded during backoff, got %v", err)
 	}

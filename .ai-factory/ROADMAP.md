@@ -43,6 +43,10 @@
 
 - [x] **Multiple compose files per stack + per-file pull policy** — a stack may declare several `compose_file`s, deployed in list order (one `docker stack deploy` each; additive — Swarm does not prune). Each file can carry its own `pull_policy` (precedence: file → stack → global), enabling a per-file pull split (e.g. a dev app pulls `always` while postgres pulls `changed`). `compose_file` is polymorphic and backward compatible (scalar string | list of strings | list of `{file, pull_policy}` objects; mixed lists allowed). Files are deployed as-is (not merged), so each must be self-contained. No port/adapter changes — the feature flows through the existing `DeployOpts.PullPolicy`.
 
+## v0.7.0
+
+- [x] **Compose overrides per stack file (merged deploy)** — a `compose_file` entry may declare `overrides`, deployed as ONE `docker stack deploy -c base.yml -c ov1.yml -c ov2.yml` with docker/cli's last-wins compose merge (the daemon never merges compose itself). This is Swarm's answer to compose's unsupported `include:`: a shared base stack is re-parameterized per environment — env vars, image tags, limits — without duplicating the compose, and an override need not be self-contained. Distinct from the v0.6.0 multi-file mechanism (several entries = separate additive deploys, no merge); both coexist on `compose_file`. Carry-forward and the drift snapshot are computed over the *merged* view and the live replica count is written into every document of the group, so autoscaled replicas survive an override that re-declares the service or sets its own `replicas`. Each document's relative `configs:`/`secrets:` paths, sops discovery and rotation resolve against its own directory, so overrides may live elsewhere than the base. Pull policy is per group (one `--resolve-image` per deploy); precedence `file → stack → global` unchanged. `GET /stacks` + UI list each group's overrides. Backward compatible: `overrides` is optional and all existing `compose_file` shapes are untouched.
+
 ## Completed
 
 | Milestone | Date |
@@ -70,3 +74,4 @@
 | Per-stack image pull policy (v0.5.0) | 2026-07-14 |
 | Expanded self-observability metrics (v0.5.0) | 2026-07-15 |
 | Multiple compose files per stack + per-file pull policy (v0.6.0) | 2026-07-24 |
+| Compose overrides per stack file — merged deploy (v0.7.0) | 2026-08-07 |

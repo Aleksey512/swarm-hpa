@@ -56,7 +56,7 @@ For a complete, self-contained demo (local git repo + carry-forward + drift at
 |-------|----------|-------------|
 | `repo` | yes | Key into `repos.yaml`. |
 | `branch` | no | Branch to track (default `main`). |
-| `compose_file` | yes | One or more compose files inside the repo. Accepts a single path (string), a list of paths, or a list of `{file, pull_policy}` objects — see [Multiple compose files](#multiple-compose-files-per-stack). |
+| `compose_file` | yes | One or more compose files inside the repo. Accepts a single path (string), a list of paths, or a list of `{file, overrides, pull_policy}` objects — see [Multiple compose files](#multiple-compose-files-per-stack) and [Compose overrides](#compose-overrides-merged-deploy). |
 | `values_file` | no | Optional; the compose file is rendered as a Go `text/template` with `{{.Values.*}}` from this file. |
 | `sops_files` | no | sops-encrypted files (repo-relative) to decrypt before deploy. Ignored when `sops_secrets_discovery` is true. |
 | `sops_secrets_discovery` | no | When true, auto-discover sops files from the compose's file-backed `secrets:` (and ignore `sops_files`). |
@@ -124,6 +124,134 @@ SOPS discovery and config/secret rotation run per file (each resolved against it
 own file's directory), and autoscaler carry-forward applies to each deploy
 individually — so a `swarm.autoscaler.enabled` service is never reset by either
 deploy.
+
+### Compose overrides (merged deploy)
+
+Docker Compose's `include:` is a Compose-only feature — **Swarm does not support
+it**. The Swarm-native way to layer compose files is to pass several `-c` flags to
+one deploy, which is what `overrides` does:
+
+```yaml
+monitoring:
+  repo: infra
+  compose_file:
+    - file: monitoring/base.yml
+      overrides:
+        - monitoring/prod.yml
+        - monitoring/env.override.yml
+      pull_policy: always
+    - traefik.yml                      # separate, additive deploy
+```
+
+produces:
+
+```bash
+docker stack deploy -c monitoring/base.yml -c monitoring/prod.yml -c monitoring/env.override.yml monitoring
+docker stack deploy -c traefik.yml monitoring
+```
+
+Use it to define a base stack once and re-parameterize it per environment —
+change `environment:`, image tags, replicas — without duplicating the compose.
+
+#### Overrides vs. multiple compose files
+
+Both features live on `compose_file` and are easy to confuse. The difference is
+whether the files are **merged** or **deployed separately**:
+
+| | Several **entries** (previous section) | `overrides` **inside one entry** |
+|---|---|---|
+| Deploys | one `docker stack deploy` **per file** | **one** deploy for the whole group |
+| Semantics | additive, **no merge** | docker/cli **compose merge**, later `-c` wins |
+| Each file | must be **self-contained** | overrides need **not** be self-contained |
+| Pull policy | per file | per **group** |
+
+A base file plus its overrides is called a **merge group**: one group = one
+`docker stack deploy`, and a stack may declare several groups.
+
+#### Merge semantics
+
+The daemon does not merge compose itself — it hands every file of the group to
+`docker stack deploy` as its own `-c` flag and lets docker/cli apply its own merge
+rules. Broadly: mappings deep-merge and most sequences are replaced wholesale, so
+an override that sets `environment:` merges into the base's environment, while one
+that sets `command:` replaces it. Consult Docker's own [merge
+documentation](https://docs.docker.com/reference/compose-file/merge/) for the
+exact per-key rules — they belong to Docker, not to this daemon, and delegating
+keeps the behavior identical to running the `docker` CLI by hand.
+
+Because the merge happens in docker/cli, an override only needs the keys it
+changes:
+
+```yaml
+# monitoring/base.yml — the full stack
+services:
+  grafana:
+    image: grafana/grafana:11.0.0
+    environment:
+      GF_SERVER_ROOT_URL: http://localhost:3000
+    deploy:
+      replicas: 1
+
+# monitoring/prod.yml — only what differs
+services:
+  grafana:
+    image: grafana/grafana:11.3.0
+    environment:
+      GF_SERVER_ROOT_URL: https://grafana.example.com
+```
+
+#### Pull policy
+
+A merge group is one deploy, and `docker stack deploy` accepts exactly one
+`--resolve-image`, so the pull policy is **per group** — set it on the group's
+entry, not on individual overrides. Precedence is unchanged: `file → stack →
+global`. To apply *different* pull policies within a stack, use separate
+`compose_file` entries (see the previous section).
+
+#### Autoscaled replicas survive the merge
+
+Carry-forward is computed over the **merged view** of the group, and the live
+replica count is written into every document that declares the service. So a
+`swarm.autoscaler.enabled` service keeps its HPA count even when:
+
+- the autoscaler labels are only in the base file and an override re-declares the
+  service (or vice versa — labels only in an override are honored too);
+- an override sets its own `deploy.replicas`.
+
+An override may also change the policy: adding `swarm.autoscaler.enabled: "true"`
+opts a service in (it then disappears from drift reporting, since the HPA owns its
+replicas), and setting it to `"false"` opts it back out. `min`/`max` from the
+merged labels are what clamp the carried-forward count.
+
+#### Relative paths, secrets and rotation
+
+Each file's relative `configs:` / `secrets:` `file:` paths resolve against **its
+own directory**, exactly as they would if you ran `docker stack deploy` yourself.
+An override may therefore live in a different directory than its base:
+
+```yaml
+compose_file:
+  - file: base/compose.yml       # secrets resolve under base/
+    overrides:
+      - env/prod.yml             # secrets resolve under env/
+```
+
+SOPS discovery unions the file-backed secrets of every document in the group
+(each against its own directory) and decrypts them once before the deploy;
+config/secret rotation likewise runs per document.
+
+#### Caveats
+
+- Overrides are **rendered like any other compose file** — the stack's
+  `values_file` templating applies to them too.
+- The group is **all-or-nothing before deploy**: if any file of the group fails to
+  read or render, the stack fails at the `render` stage and nothing is deployed.
+- Between groups the [additive and non-transactional caveats](#multiple-compose-files-per-stack)
+  still apply: a failing group leaves earlier groups already applied.
+- An override that repeats the base file is rejected at config load.
+
+The `GET /stacks` JSON and UI list each group's overrides under its base file, so
+you can see exactly which files went into a deploy.
 
 ### Flags & environment
 
@@ -271,8 +399,9 @@ when `--gitops` is enabled.
   `ok` is `false` with `error_stage`/`error_message` when the last sync failed
   (git, render, secrets, rotate, or deploy). `desired_replicas` is the
   non-autoscaled, non-global replica snapshot taken at the last render.
-  For a [multi-file stack](#multiple-compose-files-per-stack), each entry also
-  carries a `files` array — see [Per-file status](#per-file-status-multi-file-stacks).
+  For a [multi-file stack](#multiple-compose-files-per-stack) or one using
+  [compose overrides](#compose-overrides-merged-deploy), each entry also carries a
+  `files` array — see [Per-file status](#per-file-status-multi-file-stacks).
 - **`GET /`** (or **`GET /ui`**) — a read-only HTML table of the same data
   (refresh to update; no client-side JavaScript).
 
@@ -293,32 +422,36 @@ A failed Swarm read for one stack degrades just that stack's `drift` to a
 ### Per-file status (multi-file stacks)
 
 A [multi-file stack](#multiple-compose-files-per-stack) is deployed as one
-`docker stack deploy` per compose file, in order. The status surface reflects
-that per file, so a **partial failure is visible** (not collapsed into a single
-stack-level error). Each entry's `files` array, in deploy order:
+`docker stack deploy` per `compose_file` entry, in order. The status surface
+reflects that per entry, so a **partial failure is visible** (not collapsed into a
+single stack-level error). Each stack's `files` array, in deploy order:
 
 ```json
 "files": [
-  {"file": "app.yaml", "pull_policy": "always", "status": "ok"},
+  {"file": "base.yaml", "overrides": ["prod.yaml"], "pull_policy": "always", "status": "ok"},
   {"file": "postgres.yaml", "pull_policy": "changed", "status": "failed", "error": "image pull denied"},
   {"file": "monitor.yaml", "pull_policy": "changed", "status": "skipped"}
 ]
 ```
 
+- One array element = one **deploy**, i.e. one merge group. `overrides` lists the
+  files merged into that deploy via extra `-c` flags, in order; the key is absent
+  for a plain single-file deploy. The `status` state machine below is therefore
+  per group, not per individual file.
 - `status` is `ok` (deployed this sync), `failed` (with `error`), `skipped` (an
-  earlier file failed, so this one was never reached), or pending (empty — the
+  earlier group failed, so this one was never reached), or pending (empty — the
   stack failed before the deploy stage).
-- `pull_policy` is the effective policy used for that file's deploy
+- `pull_policy` is the effective policy used for that group's deploy
   (precedence file → stack → global) — this is where the per-file pull split
   (e.g. app `always`, postgres `changed`) shows up.
 
-The HTML table has a **files** column with one line per file (path · pull policy ·
-status). On a partial failure the failing file is red with its error, earlier
-files are green (already applied — Swarm deploys are additive and **not**
-transactional, so they are not rolled back), and later files are grey (`skipped`).
-The stack-level status still reads the failing stage. Single-file stacks show one
-line. `files` is empty (the UI shows `—`) when the stack failed before deploy or
-has never synced.
+The HTML table has a **files** column with one line per group (path · pull policy ·
+status), and each group's override files listed beneath it. On a partial failure
+the failing group is red with its error, earlier groups are green (already applied
+— Swarm deploys are additive and **not** transactional, so they are not rolled
+back), and later groups are grey (`skipped`). The stack-level status still reads
+the failing stage. Single-file stacks show one line. `files` is empty (the UI
+shows `—`) when the stack failed before deploy or has never synced.
 
 ## Migrating from swarm-cd
 

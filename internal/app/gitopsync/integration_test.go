@@ -5,6 +5,7 @@ package gitopsync
 import (
 	"context"
 	"crypto/md5" //nolint:gosec // G501: content hash for test assertion, not a security primitive
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -70,12 +71,16 @@ func (liveState) StackServices(_ context.Context, _ string) ([]model.StackServic
 }
 
 // captureDeploy records the (carry-forward-adjusted) compose map the deploy would
-// apply, instead of hitting a real Swarm.
+// apply, instead of hitting a real Swarm. A merge group arrives as several -c
+// files; the BASE document (the first) is the one these tests assert on.
 type captureDeploy struct{ ch chan map[string]any }
 
 func (c *captureDeploy) fn() stackdeploy.DeployFunc {
-	return func(_ context.Context, _ string, composeFile, _ string) error {
-		b, err := os.ReadFile(composeFile)
+	return func(_ context.Context, _ string, composeFiles []string, _ string) error {
+		if len(composeFiles) == 0 {
+			return errors.New("deploy called with no compose files")
+		}
+		b, err := os.ReadFile(composeFiles[0])
 		if err != nil {
 			return err
 		}
@@ -200,7 +205,7 @@ func TestGitOpsLoop_DryRunDoesNotDeploy(t *testing.T) {
 type capturePolicyDeploy struct{ ch chan string }
 
 func (c *capturePolicyDeploy) fn() stackdeploy.DeployFunc {
-	return func(_ context.Context, _ string, _ string, pullPolicy string) error {
+	return func(_ context.Context, _ string, _ []string, pullPolicy string) error {
 		c.ch <- pullPolicy
 		return nil
 	}
@@ -422,7 +427,10 @@ func newOverlapState() *overlapState {
 // tracking and a blocking delay so concurrency is observable, while still
 // capturing each stack's compose map. repoOf maps a stack name to its repo.
 func overlapDeployFn(repoOf func(string) string, block time.Duration, st *overlapState) stackdeploy.DeployFunc {
-	return func(_ context.Context, name, composeFile, _ string) error {
+	return func(_ context.Context, name string, composeFiles []string, _ string) error {
+		if len(composeFiles) == 0 {
+			return errors.New("deploy called with no compose files")
+		}
 		repo := repoOf(name)
 		st.mu.Lock()
 		st.total++
@@ -442,7 +450,7 @@ func overlapDeployFn(repoOf func(string) string, block time.Duration, st *overla
 			time.Sleep(block)
 		}
 
-		b, err := os.ReadFile(composeFile)
+		b, err := os.ReadFile(composeFiles[0])
 		if err != nil {
 			return err
 		}
@@ -550,4 +558,141 @@ func TestGitOpsLoop_ConcurrentSyncAcrossRepos(t *testing.T) {
 			t.Errorf("no overlap expected at concurrency=1; got overlap=%v", st.overlap)
 		}
 	})
+}
+
+// --- compose overrides end-to-end ---
+
+// captureGroupDeploy records the full ordered `-c` list of a deploy plus each
+// file's parsed content and directory, so an end-to-end test can assert that the
+// real deployer materialized one temp compose per document, in order, next to
+// each document's own source file.
+type captureGroupDeploy struct {
+	ch chan capturedGroup
+}
+
+type capturedGroup struct {
+	paths []string
+	dirs  []string
+	docs  []map[string]any
+}
+
+func (c *captureGroupDeploy) fn() stackdeploy.DeployFunc {
+	return func(_ context.Context, _ string, composeFiles []string, _ string) error {
+		got := capturedGroup{paths: append([]string(nil), composeFiles...)}
+		for _, f := range composeFiles {
+			b, err := os.ReadFile(f)
+			if err != nil {
+				return err
+			}
+			var m map[string]any
+			if err := yaml.Unmarshal(b, &m); err != nil {
+				return err
+			}
+			got.docs = append(got.docs, m)
+			got.dirs = append(got.dirs, filepath.Dir(f))
+		}
+		c.ch <- got
+		return nil
+	}
+}
+
+const overrideBaseCompose = `services:
+  web:
+    image: nginx
+    deploy:
+      replicas: 3
+      labels:
+        swarm.autoscaler.enabled: "true"
+        swarm.autoscaler.min: "2"
+        swarm.autoscaler.max: "10"
+  db:
+    image: postgres
+    deploy:
+      replicas: 1
+`
+
+// The override changes only what it needs to — it is NOT self-contained, which is
+// the whole point of the merged deploy.
+const overrideProdCompose = `services:
+  web:
+    environment:
+      ENV: production
+  db:
+    image: postgres:16
+`
+
+// TestGitOpsLoop_ComposeOverridesEndToEnd drives a merge group through the REAL
+// git adapter, renderer and deployer. It proves the chain that matters:
+//   - one deploy carrying both documents as -c files, base first;
+//   - each temp compose written next to ITS OWN source file (relative
+//     configs:/secrets: paths keep resolving — patch 2026-07-06-14.11);
+//   - carry-forward reached BOTH documents, so no matter which one wins
+//     docker/cli's merge, the HPA's replica count (7) survives.
+func TestGitOpsLoop_ComposeOverridesEndToEnd(t *testing.T) {
+	remote := seedGitRepoFiles(t, "main", map[string][]byte{
+		"base/compose.yaml": []byte(overrideBaseCompose),
+		"env/prod.yaml":     []byte(overrideProdCompose),
+	})
+	reposPath := t.TempDir()
+	src := gitadapter.New(reposPath, map[string]model.RepoConfig{"r": {URL: remote}}, testLogger())
+	cap := &captureGroupDeploy{ch: make(chan capturedGroup, 1)}
+	deployer := stackdeploy.New(liveState{}, cap.fn(), testLogger())
+
+	st := []model.StackConfig{{
+		Name: "mystack", Repo: "r", Branch: "main",
+		ComposeFiles: []model.ComposeFileSpec{{
+			File:      "base/compose.yaml",
+			Overrides: []string{"env/prod.yaml"},
+		}},
+	}}
+	tickSrc, _ := manualTicks()
+	loop := New(src, stackrender.New(testLogger()), deployer, nil, &fakeRec{}, nil, st,
+		"changed", false, false, 1, testLogger(), WithTickSource(tickSrc))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = loop.Run(ctx, time.Hour); close(done) }()
+	defer func() { cancel(); <-done }()
+
+	var got capturedGroup
+	select {
+	case got = <-cap.ch:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout: deploy never fired")
+	}
+
+	if len(got.paths) != 2 {
+		t.Fatalf("deploy got %d -c files, want 2 (base + override in ONE deploy)", len(got.paths))
+	}
+
+	// Each temp compose lives next to its own source file inside the worktree.
+	worktree := src.WorktreePath(st[0])
+	wantDirs := []string{filepath.Join(worktree, "base"), filepath.Join(worktree, "env")}
+	for i, want := range wantDirs {
+		if got.dirs[i] != want {
+			t.Errorf("temp compose %d dir = %q, want %q", i, got.dirs[i], want)
+		}
+	}
+
+	// Base first: the base document is the one carrying the autoscaler labels.
+	baseServices := got.docs[0]["services"].(map[string]any)
+	if _, isBase := baseServices["web"].(map[string]any)["deploy"].(map[string]any)["labels"]; !isBase {
+		t.Fatal("document 0 is not the base file (no autoscaler labels found)")
+	}
+	if r := replicasInt64(baseServices, "web"); r != 7 {
+		t.Errorf("base web replicas = %d, want 7 (HPA preserved over compose 3)", r)
+	}
+	if r := replicasInt64(baseServices, "db"); r != 1 {
+		t.Errorf("base db replicas = %d, want 1 (compose-owned)", r)
+	}
+
+	// The override re-declares web, so carry-forward must have written the live
+	// count there too — otherwise docker/cli's merge could resurrect compose's 3.
+	ovrServices := got.docs[1]["services"].(map[string]any)
+	if r := replicasInt64(ovrServices, "web"); r != 7 {
+		t.Errorf("override web replicas = %d, want 7 (carry-forward must reach every document of the group)", r)
+	}
+	if img := ovrServices["db"].(map[string]any)["image"]; img != "postgres:16" {
+		t.Errorf("override db image = %v, want postgres:16 (override content must survive rendering)", img)
+	}
 }

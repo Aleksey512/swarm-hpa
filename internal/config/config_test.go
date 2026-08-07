@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -659,6 +660,59 @@ func TestLoadGitOps_ComposeFileShapes(t *testing.T) {
 			yaml:    "web:\n  repo: myrepo\n  compose_file: 123\n",
 			wantErr: "must be a string or a list",
 		},
+		{
+			name: "single override",
+			yaml: "web:\n  repo: myrepo\n  compose_file:\n    - file: base.yaml\n      overrides:\n        - prod.yaml\n",
+			want: []model.ComposeFileSpec{{File: "base.yaml", Overrides: []string{"prod.yaml"}}},
+		},
+		{
+			name: "multiple overrides keep declaration order",
+			yaml: "web:\n  repo: myrepo\n  compose_file:\n    - file: base.yaml\n      overrides:\n        - prod.yaml\n        - env.override.yaml\n",
+			want: []model.ComposeFileSpec{{File: "base.yaml", Overrides: []string{"prod.yaml", "env.override.yaml"}}},
+		},
+		{
+			name: "overrides combine with per-group pull_policy",
+			yaml: "web:\n  repo: myrepo\n  compose_file:\n    - file: base.yaml\n      overrides: [prod.yaml]\n      pull_policy: always\n",
+			want: []model.ComposeFileSpec{{File: "base.yaml", Overrides: []string{"prod.yaml"}, PullPolicy: "always"}},
+		},
+		{
+			name: "merge group mixed with a plain additive entry",
+			yaml: "web:\n  repo: myrepo\n  compose_file:\n    - file: base.yaml\n      overrides: [prod.yaml]\n    - traefik.yaml\n",
+			want: []model.ComposeFileSpec{
+				{File: "base.yaml", Overrides: []string{"prod.yaml"}},
+				{File: "traefik.yaml"},
+			},
+		},
+		{
+			name: "empty overrides list means no overrides",
+			yaml: "web:\n  repo: myrepo\n  compose_file:\n    - file: base.yaml\n      overrides: []\n",
+			want: []model.ComposeFileSpec{{File: "base.yaml"}},
+		},
+		{
+			name:    "non-list overrides rejected",
+			yaml:    "web:\n  repo: myrepo\n  compose_file:\n    - file: base.yaml\n      overrides: prod.yaml\n",
+			wantErr: "overrides must be a list of strings",
+		},
+		{
+			name:    "non-string override element rejected",
+			yaml:    "web:\n  repo: myrepo\n  compose_file:\n    - file: base.yaml\n      overrides:\n        - 42\n",
+			wantErr: "overrides[0] must be a non-empty string",
+		},
+		{
+			name:    "empty override element rejected",
+			yaml:    "web:\n  repo: myrepo\n  compose_file:\n    - file: base.yaml\n      overrides:\n        - \"\"\n",
+			wantErr: "overrides[0] must be a non-empty string",
+		},
+		{
+			name:    "override duplicating the base file rejected",
+			yaml:    "web:\n  repo: myrepo\n  compose_file:\n    - file: base.yaml\n      overrides:\n        - prod.yaml\n        - base.yaml\n",
+			wantErr: `overrides[1] duplicates the base file "base.yaml"`,
+		},
+		{
+			name:    "override repeating an earlier override rejected",
+			yaml:    "web:\n  repo: myrepo\n  compose_file:\n    - file: base.yaml\n      overrides:\n        - prod.yaml\n        - prod.yaml\n",
+			wantErr: `overrides[1] duplicates an earlier override "prod.yaml"`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -689,7 +743,9 @@ func TestLoadGitOps_ComposeFileShapes(t *testing.T) {
 				t.Fatalf("ComposeFiles len = %d, want %d (%+v)", len(got), len(tc.want), got)
 			}
 			for i := range tc.want {
-				if got[i] != tc.want[i] {
+				// reflect.DeepEqual, not ==: ComposeFileSpec carries an
+				// Overrides slice and is no longer comparable.
+				if !reflect.DeepEqual(got[i], tc.want[i]) {
 					t.Errorf("ComposeFiles[%d] = %+v, want %+v", i, got[i], tc.want[i])
 				}
 			}

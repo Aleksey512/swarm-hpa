@@ -179,9 +179,18 @@ func runManager(ctx context.Context, cfg config.Config, cli *client.Client, logg
 			gitopsync.WithStackStateReader(swarmCtl),
 		)
 		sopsStacks := 0
+		// deployGroups is the number of `docker stack deploy` invocations one sync
+		// tick performs (one per compose_file entry); overrideFiles counts the extra
+		// -c flags merged into those deploys. Both are logged so the effective
+		// multi-file configuration is visible at startup, not only in the /stacks UI.
+		deployGroups, overrideFiles := 0, 0
 		for _, s := range stacks {
 			if s.SopsSecretsDiscovery || len(s.SopsFiles) > 0 {
 				sopsStacks++
+			}
+			deployGroups += len(s.ComposeFiles)
+			for _, spec := range s.ComposeFiles {
+				overrideFiles += len(spec.Overrides)
 			}
 		}
 		logger.Info("gitops enabled",
@@ -189,6 +198,7 @@ func runManager(ctx context.Context, cfg config.Config, cli *client.Client, logg
 			"repos_path", cfg.GitOpsReposPath, "pull_policy", cfg.GitOpsPullPolicy,
 			"dry_run", cfg.DryRun, "auto_rotate", cfg.GitOpsAutoRotate,
 			"concurrency", cfg.GitOpsConcurrency, "sops_stacks", sopsStacks,
+			"deploy_groups", deployGroups, "override_files", overrideFiles,
 			"status_api", cfg.MetricsAddr+"{/stacks JSON, / UI}")
 		go func() {
 			if err := gitLoop.Run(ctx, cfg.GitOpsInterval); err != nil {

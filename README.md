@@ -63,7 +63,7 @@ docker service update \
 - **Manager / agent split** — one binary, two roles. The default **manager** runs the reconcile loop; optional per-node **agents** (`mode: global`) report local load so stats autoscaling works across the **whole cluster**, not just the manager's node.
 - **Stuck-task healer** — force-updates a service only when the precise stuck-pending signature holds and the constrained node has recovered. Opt in independently with `swarm.autoscaler.heal=true`.
 - **Load-aware rebalancing** — Swarm spreads tasks by count, not load; the manager detects node-CPU skew and can relieve a busy node. Opt in with `swarm.autoscaler.rebalance=true` (dry-run + long cooldown).
-- **GitOps stack sync** — optionally deploy stacks from Git directly from the manager (`--gitops`), replacing a third-party swarm-cd. Because the same process also autoscales, a deploy never clobbers a replica count the autoscaler set. Drop-in `repos.yaml`/`stacks.yaml` compatibility; SOPS secret decryption + config/secret rotation; per-stack status API + drift UI (`GET /stacks`); dry-run-aware.
+- **GitOps stack sync** — optionally deploy stacks from Git directly from the manager (`--gitops`), replacing a third-party swarm-cd. Because the same process also autoscales, a deploy never clobbers a replica count the autoscaler set. Drop-in `repos.yaml`/`stacks.yaml` compatibility; SOPS secret decryption + config/secret rotation; compose overrides merged into one deploy (`-c base.yml -c prod.yml`); per-stack status API + drift UI (`GET /stacks`); dry-run-aware.
 - **Opt-in via labels** — a service is touched only when it carries `swarm.autoscaler.*` labels (`enabled=true` autoscale, `heal=true` heal, `rebalance=true` rebalance).
 - **Dry-run by default** — out of the box the daemon only logs intended actions.
 - **Safe mutations** — one guarded path enforces dry-run + per-service cooldown; replica changes are clamped to `min`/`max`.
@@ -113,7 +113,10 @@ Optionally deploy stacks from Git directly from the manager (`--gitops`), replac
 a third-party swarm-cd. Because the same process also autoscales, a deploy never
 clobbers a replica count the autoscaler set — replicas of `swarm.autoscaler.enabled`
 services are carried forward (clamped to `[min,max]`) before `docker stack deploy`.
-Drop-in `repos.yaml` / `stacks.yaml` compatibility; dry-run-aware.
+Drop-in `repos.yaml` / `stacks.yaml` compatibility; dry-run-aware. A stack can
+declare **compose overrides** (`-c base.yml -c prod.yml`, merged by docker/cli) so
+one base stack is re-parameterized per environment — Swarm's answer to compose's
+unsupported `include:`.
 
 ```bash
 ./bin/swarm-hpa --gitops --gitops-configs-path=/etc/swarm-hpa
