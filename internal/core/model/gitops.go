@@ -12,24 +12,50 @@ type RepoConfig struct {
 	PasswordFile string
 }
 
-// ComposeFileSpec is one compose file of a stack, with an optional per-file
-// image pull policy.
+// ComposeFileSpec is one MERGE GROUP of a stack: a base compose file, its
+// optional override files, and an optional per-group image pull policy. One spec
+// = one `docker stack deploy`.
 //
-// A stack may declare several compose files (ComposeFiles on StackConfig). They
-// are deployed in slice order, one `docker stack deploy` each. Deploys are
-// ADDITIVE: Swarm does not prune services that are absent from a later file's
-// deploy, so the files accumulate into the single stack namespace. Each file is
-// deployed AS-IS — there is no merging — so each file must be self-contained
-// (declare its own networks/volumes and any top-level secrets/configs it
-// references). List order is the deploy order (put shared infrastructure first).
+// Two different multi-file mechanisms meet here; do not confuse them:
+//
+//   - Several SPECS on a stack (ComposeFiles on StackConfig) are deployed in
+//     slice order, one `docker stack deploy` each, with NO merging. Those deploys
+//     are ADDITIVE: Swarm does not prune services absent from a later deploy, so
+//     the specs accumulate into the single stack namespace. Each spec's base file
+//     is deployed AS-IS, so it must be self-contained (declare its own
+//     networks/volumes and any top-level secrets/configs it references).
+//
+//   - Overrides WITHIN one spec are merged into a SINGLE deploy — the Swarm
+//     equivalent of compose's unsupported `include:`:
+//     `docker stack deploy -c base.yml -c override.yml -c another.override.yml`.
+//     docker/cli performs the merge (maps deep-merge, later file wins per key),
+//     so an override file need NOT be self-contained: it may carry only the keys
+//     it changes (environment, image, replicas, …). Slice order is `-c` order and
+//     therefore decides precedence.
 //
 // A non-empty PullPolicy overrides the stack-level PullPolicy AND the global
-// --gitops-pull-policy for THIS file's deploy only (precedence: file → stack →
-// global). This is what makes a per-file pull split possible — e.g. dev apps
-// pull `always` while a postgres file pulls `changed`, via two deploys.
+// --gitops-pull-policy for THIS group's deploy only (precedence: file → stack →
+// global). A merge group is one deploy and `docker stack deploy` accepts exactly
+// one --resolve-image, so the policy is per GROUP, not per override file. This is
+// what makes a per-file pull split possible — e.g. dev apps pull `always` while a
+// postgres file pulls `changed`, via two separate specs.
 type ComposeFileSpec struct {
-	File       string // repo-relative path to the compose file
+	File string // repo-relative path to the base compose file
+	// Overrides are repo-relative paths merged INTO this group's deploy, in
+	// order, after File. They need not be self-contained; docker/cli merges them
+	// over the base last-wins. Empty for a plain single-file deploy.
+	Overrides  []string
 	PullPolicy string // "", "always", or "changed"; "" inherits stack→global
+}
+
+// AllFiles returns the group's compose files in `-c` order: the base file first,
+// then each override. The order is load-bearing — it is what docker/cli's merge
+// uses to decide which value wins.
+func (s ComposeFileSpec) AllFiles() []string {
+	files := make([]string, 0, 1+len(s.Overrides))
+	files = append(files, s.File)
+	files = append(files, s.Overrides...)
+	return files
 }
 
 // StackConfig describes one stack to sync from Git and deploy to Swarm. It mirrors
@@ -39,9 +65,10 @@ type StackConfig struct {
 	Name   string // Swarm stack namespace
 	Repo   string // key into the repos map
 	Branch string
-	// ComposeFiles is the ordered list of compose files for this stack. Each is
-	// rendered and deployed in order (see ComposeFileSpec). At least one entry is
-	// required; the field replaces the former single ComposeFile string.
+	// ComposeFiles is the ordered list of merge groups for this stack. Each group
+	// is rendered and deployed in order, one `docker stack deploy` per group (see
+	// ComposeFileSpec for how a group's base file and overrides relate). At least
+	// one entry is required.
 	ComposeFiles []ComposeFileSpec
 	ValuesFile   string // optional; "" disables template rendering
 	// SopsFiles are repo-relative paths of sops-encrypted files to decrypt before

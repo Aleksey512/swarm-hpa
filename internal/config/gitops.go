@@ -40,9 +40,9 @@ type fileStack struct {
 	// ComposeFile is polymorphic: it is decoded into a generic any and then
 	// normalized by parseComposeFiles into []model.ComposeFileSpec. It accepts a
 	// scalar string ("compose.yaml"), a list of strings ([a.yaml, b.yaml]), or a
-	// list of objects ({file: ..., pull_policy: always|changed}). Mixed lists
-	// (strings and objects) are allowed. The scalar form preserves swarm-cd
-	// drop-in compatibility.
+	// list of objects ({file: ..., overrides: [...], pull_policy: always|changed}).
+	// Mixed lists (strings and objects) are allowed. The scalar form preserves
+	// swarm-cd drop-in compatibility.
 	ComposeFile          any      `yaml:"compose_file"`
 	ValuesFile           string   `yaml:"values_file"`
 	SopsFiles            []string `yaml:"sops_files"`
@@ -123,10 +123,11 @@ func loadStacksFile(configsPath string, repos map[string]model.RepoConfig) ([]mo
 }
 
 // parseComposeFiles normalizes the polymorphic stacks.yaml compose_file value
-// into an ordered []model.ComposeFileSpec. It accepts:
+// into an ordered []model.ComposeFileSpec (one spec = one merge group = one
+// `docker stack deploy`). It accepts:
 //   - a scalar string:  compose_file: compose.yaml
 //   - a list of strings: compose_file: [a.yaml, b.yaml]
-//   - a list of objects: compose_file: [{file: a.yaml, pull_policy: always}, ...]
+//   - a list of objects: compose_file: [{file: a.yaml, overrides: [a.prod.yaml], pull_policy: always}, ...]
 //   - a mixed list (strings and objects) — strings inherit the stack/global policy
 //
 // Each object's pull_policy must be "", "always", or "changed". At least one file
@@ -163,9 +164,10 @@ func parseComposeFiles(stack string, v any) ([]model.ComposeFileSpec, error) {
 	}
 }
 
-// parseComposeFileItem normalizes one element of a compose_file list. A string
-// element inherits the stack/global pull policy; an object element carries an
-// optional per-file pull_policy.
+// parseComposeFileItem normalizes one element of a compose_file list into a merge
+// group. A string element is a bare base file that inherits the stack/global pull
+// policy; an object element may additionally carry `overrides` (files merged into
+// the SAME deploy via extra -c flags) and a per-group pull_policy.
 func parseComposeFileItem(stack string, idx int, item any) (model.ComposeFileSpec, error) {
 	switch t := item.(type) {
 	case string:
@@ -184,8 +186,51 @@ func parseComposeFileItem(stack string, idx int, item any) (model.ComposeFileSpe
 		default:
 			return model.ComposeFileSpec{}, fmt.Errorf("gitops: stack %q compose_file[%d] pull_policy must be always|changed, got %q", stack, idx, policy)
 		}
-		return model.ComposeFileSpec{File: file, PullPolicy: policy}, nil
+		overrides, err := parseOverrides(stack, idx, file, t["overrides"])
+		if err != nil {
+			return model.ComposeFileSpec{}, err
+		}
+		return model.ComposeFileSpec{File: file, Overrides: overrides, PullPolicy: policy}, nil
 	default:
 		return model.ComposeFileSpec{}, fmt.Errorf("gitops: stack %q compose_file[%d] must be a string or an object, got %T", stack, idx, item)
 	}
+}
+
+// parseOverrides normalizes the `overrides` key of one compose_file object into
+// an ordered []string of repo-relative paths. Overrides are merged into the SAME
+// `docker stack deploy` as base (extra -c flags), so order matters: later files
+// win. An absent or empty list yields nil (a plain single-file deploy).
+//
+// A repeated file is rejected — whether it repeats the base or an earlier
+// override. Passing the same document twice to `docker stack deploy` is always a
+// config mistake: it would merge the file onto itself rather than doing what the
+// author intended.
+func parseOverrides(stack string, idx int, base string, v any) ([]string, error) {
+	if v == nil {
+		return nil, nil
+	}
+	list, ok := v.([]any)
+	if !ok {
+		return nil, fmt.Errorf("gitops: stack %q compose_file[%d] overrides must be a list of strings, got %T", stack, idx, v)
+	}
+	if len(list) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(list))
+	seen := map[string]bool{base: true}
+	for i, raw := range list {
+		path, ok := raw.(string)
+		if !ok || path == "" {
+			return nil, fmt.Errorf("gitops: stack %q compose_file[%d] overrides[%d] must be a non-empty string, got %T", stack, idx, i, raw)
+		}
+		if path == base {
+			return nil, fmt.Errorf("gitops: stack %q compose_file[%d] overrides[%d] duplicates the base file %q", stack, idx, i, base)
+		}
+		if seen[path] {
+			return nil, fmt.Errorf("gitops: stack %q compose_file[%d] overrides[%d] duplicates an earlier override %q", stack, idx, i, path)
+		}
+		seen[path] = true
+		out = append(out, path)
+	}
+	return out, nil
 }
