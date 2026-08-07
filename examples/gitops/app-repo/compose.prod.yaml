@@ -1,0 +1,36 @@
+# compose.prod.yaml — an optional OVERRIDE file for the demoapp stack.
+# =============================================================================
+# Uncomment the `overrides:` block in ../stacks.yaml to merge this into the SAME
+# `docker stack deploy` as compose.yaml:
+#
+#   docker stack deploy -c compose.yaml -c compose.prod.yaml demoapp
+#
+# This is Swarm's answer to compose's `include:` (which Swarm does not support).
+# docker/cli merges the two documents last-wins, so — unlike the separate,
+# additive deploy of postgres.yaml — this file is intentionally NOT
+# self-contained: it declares only the keys it changes.
+#
+# What it changes:
+#   web    — a production root URL via `environment` (merged into the base's
+#            environment map, which is empty here) and a tighter CPU limit.
+#   cache  — a pinned patch image tag.
+#
+# What it deliberately does NOT change: web's `replicas`. That service is
+# autoscaled, and carry-forward computes the merged view of the whole group, so
+# the HPA's live count survives even if an override sets replicas. Try adding
+# `replicas: 5` under web's deploy and watch the deploy still keep the live count
+# (see docs/gitops.md#autoscaled-replicas-survive-the-merge).
+# =============================================================================
+version: "3.8"
+
+services:
+  web:
+    environment:
+      WHOAMI_NAME: demoapp-production
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+
+  cache:
+    image: redis:7.4-alpine

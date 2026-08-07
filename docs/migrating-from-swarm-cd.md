@@ -62,10 +62,19 @@ existing files, no renaming, no reshaping.
 |----------------|-----------------|---------|
 | `repo` | `repo` | `StackConfig.Repo` (key into `repos.yaml`) |
 | `branch` | `branch` | `StackConfig.Branch` (default `main`) |
-| `compose_file` | `compose_file` | `StackConfig.ComposeFile` |
+| `compose_file` | `compose_file` | `StackConfig.ComposeFiles` — the scalar string form is swarm-cd-identical; swarm-hpa additionally accepts a list, and per-entry `pull_policy` / `overrides` (see below) |
 | `values_file` | `values_file` | `StackConfig.ValuesFile` (optional template values) |
 | `sops_files` | `sops_files` | `StackConfig.SopsFiles` (repo-relative) |
 | `sops_secrets_discovery` | `sops_secrets_discovery` | `StackConfig.SopsSecretsDiscovery` (auto-discover from compose `secrets:`) |
+
+**swarm-hpa-only `stacks.yaml` fields** (swarm-cd has no equivalent; all optional,
+so an unmodified swarm-cd `stacks.yaml` keeps working):
+
+| Field | What |
+|-------|------|
+| `pull_policy` | Per-stack `always` / `changed` override of the global image pull policy. Can also be set per `compose_file` entry. |
+| `compose_file` as a list | Several compose files per stack, deployed in order as separate additive `docker stack deploy` calls. |
+| `overrides` (inside a `compose_file` entry) | Compose files merged into that entry's deploy via extra `-c` flags (`-c base.yml -c prod.yml`). Swarm's answer to compose's unsupported `include:`. See [Compose overrides](gitops.md#compose-overrides-merged-deploy). |
 
 **swarm-hpa-only knobs** (swarm-cd has no equivalent; these are extra):
 

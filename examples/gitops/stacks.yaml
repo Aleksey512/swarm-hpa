@@ -39,3 +39,31 @@ demoapp:
 #         pull_policy: always
 #       - file: postgres.yaml
 #         pull_policy: changed
+
+# --- Compose overrides: MERGED into one deploy (optional) ---------------------
+# Different mechanism from the list above — do not confuse the two:
+#
+#   several ENTRIES        -> several `docker stack deploy`, additive, NO merge,
+#                             each file must be self-contained
+#   `overrides:` in ONE    -> ONE `docker stack deploy` with several -c flags,
+#   entry                     merged by docker/cli last-wins; an override needs
+#                             only the keys it changes
+#
+# This is the Swarm equivalent of compose's `include:`, which Swarm does not
+# support. Use it to keep one base stack and re-parameterize it per environment
+# (env vars, image tags, limits). See docs/gitops.md#compose-overrides-merged-deploy.
+#
+#   demoapp:
+#     repo: demoapp
+#     compose_file:
+#       - file: compose.yaml
+#         overrides:
+#           - compose.prod.yaml   # merged into the SAME deploy as compose.yaml
+#         pull_policy: always     # per GROUP: one --resolve-image per deploy
+#       - postgres.yaml           # separate, additive deploy (not merged)
+#
+# ...deploys as:
+#   docker stack deploy -c compose.yaml -c compose.prod.yaml demoapp
+#   docker stack deploy -c postgres.yaml demoapp
+#
+# GET /stacks lists each group's overrides under its base file.
