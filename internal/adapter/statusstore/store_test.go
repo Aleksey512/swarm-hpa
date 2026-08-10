@@ -121,3 +121,84 @@ func TestStore_NilFilesStaysNil(t *testing.T) {
 		t.Errorf("nil Files should stay nil, got %v", got[0].Files)
 	}
 }
+
+func TestStore_SetStatePreservesLastResult(t *testing.T) {
+	s := New(testLogger())
+	s.SetStatus("web", model.StackStatus{
+		Repo: "myapp", Revision: "rev1", OK: true,
+		DeployCount: 2, DesiredReplicas: map[string]uint64{"web": 3},
+		Files: []model.StackFileStatus{{File: "compose.yaml", Status: "ok"}},
+	})
+	// Mid-pass: flip to syncing. Only Repo+State must change.
+	s.SetState("web", "myapp", "syncing")
+
+	got := s.Snapshot()
+	if len(got) != 1 {
+		t.Fatalf("got %d statuses, want 1", len(got))
+	}
+	st := got[0]
+	if st.State != "syncing" || st.Repo != "myapp" {
+		t.Errorf("SetState did not set Repo/State: repo=%q state=%q", st.Repo, st.State)
+	}
+	// Last result must be untouched.
+	if st.Revision != "rev1" || !st.OK || st.DeployCount != 2 ||
+		st.DesiredReplicas["web"] != 3 || len(st.Files) != 1 || st.Files[0].Status != "ok" {
+		t.Errorf("SetState clobbered last result: %+v", st)
+	}
+}
+
+func TestStore_SetStateSeedsEntryBeforeFirstSync(t *testing.T) {
+	// API races the first tick: SetState lands before any SetStatus.
+	s := New(testLogger())
+	s.SetState("web", "myapp", "waiting")
+
+	got := s.Snapshot()
+	if len(got) != 1 {
+		t.Fatalf("got %d statuses, want 1", len(got))
+	}
+	st := got[0]
+	if st.Name != "web" || st.Repo != "myapp" || st.State != "waiting" {
+		t.Errorf("seeded entry mismatch: %+v", st)
+	}
+}
+
+func TestStore_SetStatusClearsStateToIdle(t *testing.T) {
+	s := New(testLogger())
+	s.SetState("web", "myapp", "syncing")
+	if got := s.Snapshot()[0]; got.State != "syncing" {
+		t.Fatalf("precondition: state=%q want syncing", got.State)
+	}
+	// End of pass: a full SetStatus must reset State to "".
+	s.SetStatus("web", model.StackStatus{Repo: "myapp", Revision: "rev1", OK: true})
+
+	st := s.Snapshot()[0]
+	if st.State != "" {
+		t.Errorf("SetStatus did not reset State: got %q, want empty (idle)", st.State)
+	}
+	if st.Revision != "rev1" || !st.OK {
+		t.Errorf("SetStatus result mismatch: %+v", st)
+	}
+}
+
+func TestStore_SetStateConcurrent(t *testing.T) {
+	s := New(testLogger())
+	// Seed one full status so SetState races over an existing entry.
+	s.SetStatus("web", model.StackStatus{Repo: "myapp", Revision: "rev1", OK: true})
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			state := "syncing"
+			if i%2 == 0 {
+				state = "waiting"
+			}
+			s.SetState("web", "myapp", state)
+		}(i)
+		go func() {
+			defer wg.Done()
+			_ = s.Snapshot()
+		}()
+	}
+	wg.Wait()
+}

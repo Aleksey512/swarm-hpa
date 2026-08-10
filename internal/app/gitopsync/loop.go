@@ -203,7 +203,7 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 			l.recorder.SyncError("sync")
 			stage, errMsg = "sync", fmt.Sprintf("panic: %v", r)
 		}
-		l.recordStatus(st.Name, rev, stage, errMsg, deployed, files)
+		l.recordStatus(st.Name, st.Repo, rev, stage, errMsg, deployed, files)
 	}()
 	log := l.logger.With(slog.String("stack", st.Name))
 
@@ -212,8 +212,16 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 	// and this pipeline mutates it in place (sops writes plaintext) and reads it
 	// (rotation). The git adapter's per-repo lock only guards Sync, so the entire
 	// Sync→ReadFile→Render→Decrypt→Rotate→Deploy sequence is locked here.
+	//
+	// The live state writes (waiting → syncing) make the serialization observable
+	// in the /stacks UI: a stack that loses the race to the shared-repo lock stays
+	// "waiting" for as long as the winner holds it, while the winner is "syncing".
+	// On an uncontended repo "waiting" is near-instant and overwritten by
+	// "syncing"; recordStatus resets State to "" at the end of the pass.
+	l.markState(st.Name, st.Repo, "waiting")
 	unlock := l.acquireRepoLock(st.Repo)
 	defer unlock()
+	l.markState(st.Name, st.Repo, "syncing")
 	log.Debug("gitops: acquired repo lock", "repo", st.Repo)
 
 	r, err := l.git.Sync(ctx, st)
@@ -479,11 +487,25 @@ func (l *Loop) incDeploy(name string) {
 	l.mu.Unlock()
 }
 
+// markState writes the transient sync state (waiting/syncing) so the /stacks UI
+// can show which stacks sync in parallel vs serialize on a shared repo. No-op
+// when no status store is wired (tests). recordStatus resets State to "" at the
+// end of a pass.
+func (l *Loop) markState(name, repo, state string) {
+	if l.statusStore == nil {
+		return
+	}
+	l.statusStore.SetState(name, repo, state)
+	l.logger.Debug("gitops: stack state", "stack", name, "repo", repo, "state", state)
+}
+
 // recordStatus writes the per-stack outcome to the status store (no-op when no
 // store is wired). OK is true when no stage failed this pass. DesiredReplicas and
 // DeployCount come from the cached counters so they stay stable on unchanged
-// skips (which skip render/deploy).
-func (l *Loop) recordStatus(name, rev, stage, errMsg string, deployed bool, files []model.StackFileStatus) {
+// skips (which skip render/deploy). State is reset to "" (idle): a finished pass
+// leaves the stack not-in-flight; the live waiting/syncing overlay is markState's
+// job.
+func (l *Loop) recordStatus(name, repo, rev, stage, errMsg string, deployed bool, files []model.StackFileStatus) {
 	if l.statusStore == nil {
 		return
 	}
@@ -494,6 +516,7 @@ func (l *Loop) recordStatus(name, rev, stage, errMsg string, deployed bool, file
 
 	l.statusStore.SetStatus(name, model.StackStatus{
 		Name:            name,
+		Repo:            repo,
 		Revision:        rev,
 		OK:              stage == "",
 		ErrorStage:      stage,
@@ -503,7 +526,7 @@ func (l *Loop) recordStatus(name, rev, stage, errMsg string, deployed bool, file
 		DesiredReplicas: desired,
 		Files:           files,
 	})
-	l.logger.Debug("gitops: status updated", "stack", name, "ok", stage == "", "stage", stage)
+	l.logger.Debug("gitops: status updated", "stack", name, "repo", repo, "ok", stage == "", "stage", stage)
 }
 
 // recordStackReplicas emits per-service desired (compose) vs live (Swarm) replica

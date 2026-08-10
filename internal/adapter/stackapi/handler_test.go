@@ -22,6 +22,7 @@ func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard,
 type fakeStore struct{ items []model.StackStatus }
 
 func (f *fakeStore) SetStatus(string, model.StackStatus) {}
+func (f *fakeStore) SetState(string, string, string)     {}
 func (f *fakeStore) Snapshot() []model.StackStatus       { return f.items }
 
 // fakeLive is a minimal port.StackStateReader.
@@ -56,7 +57,7 @@ func TestHandler_StacksJSON_Drift(t *testing.T) {
 	live := &fakeLive{services: map[string][]model.StackService{
 		"web": {{Name: "worker", Replicas: 5, Replicated: true}}, // drifted: desired 2, live 5
 	}}
-	h := New(store, live, testLogger())
+	h := New(store, live, testLogger(), 0)
 
 	rr := do(h, http.MethodGet, "/stacks")
 	if rr.Code != http.StatusOK {
@@ -105,7 +106,7 @@ func TestHandler_StacksJSON_LiveErrorDegrades(t *testing.T) {
 		Name: "web", OK: true, DesiredReplicas: map[string]uint64{"worker": 2},
 	}}}
 	live := &fakeLive{err: errors.New("swarm unreachable")}
-	h := New(store, live, testLogger())
+	h := New(store, live, testLogger(), 0)
 
 	rr := do(h, http.MethodGet, "/stacks")
 	if rr.Code != http.StatusOK {
@@ -133,7 +134,7 @@ func TestHandler_NoDesiredSkipsDrift(t *testing.T) {
 	store := &fakeStore{items: []model.StackStatus{{Name: "web", OK: true}}}
 	calls := 0
 	live := &liveCounter{fn: func(string) ([]model.StackService, error) { calls++; return nil, nil }}
-	h := New(store, live, testLogger())
+	h := New(store, live, testLogger(), 0)
 
 	rr := do(h, http.MethodGet, "/stacks")
 	if rr.Code != http.StatusOK {
@@ -147,7 +148,7 @@ func TestHandler_NoDesiredSkipsDrift(t *testing.T) {
 func TestHandler_UI(t *testing.T) {
 	store := &fakeStore{items: []model.StackStatus{{Name: "web-prod", Revision: "abc", OK: true, DesiredReplicas: map[string]uint64{"worker": 2}}}}
 	live := &fakeLive{services: map[string][]model.StackService{"web-prod": {{Name: "worker", Replicas: 2, Replicated: true}}}}
-	h := New(store, live, testLogger())
+	h := New(store, live, testLogger(), 0)
 
 	rr := do(h, http.MethodGet, "/")
 	if rr.Code != http.StatusOK {
@@ -169,7 +170,7 @@ func TestHandler_UI(t *testing.T) {
 }
 
 func TestHandler_Routing(t *testing.T) {
-	h := New(&fakeStore{}, &fakeLive{}, testLogger())
+	h := New(&fakeStore{}, &fakeLive{}, testLogger(), 0)
 	if rr := do(h, http.MethodGet, "/nope"); rr.Code != http.StatusNotFound {
 		t.Errorf("unknown path = %d, want 404", rr.Code)
 	}
@@ -198,7 +199,7 @@ func TestHandler_StacksJSON_Files(t *testing.T) {
 			{File: "postgres.yaml", PullPolicy: "changed", Status: "failed", Error: "image pull denied"},
 		},
 	}}}
-	h := New(store, nil, testLogger())
+	h := New(store, nil, testLogger(), 0)
 
 	rr := do(h, http.MethodGet, "/stacks")
 	if rr.Code != http.StatusOK {
@@ -243,7 +244,7 @@ func TestHandler_UI_Files(t *testing.T) {
 			{File: "monitor.yaml", Status: "skipped"},
 		},
 	}}}
-	h := New(store, nil, testLogger())
+	h := New(store, nil, testLogger(), 0)
 
 	rr := do(h, http.MethodGet, "/")
 	if rr.Code != http.StatusOK {
@@ -268,7 +269,7 @@ func TestHandler_StacksJSON_Overrides(t *testing.T) {
 			{File: "traefik.yaml", PullPolicy: "changed", Status: "ok"},
 		},
 	}}}
-	h := New(store, nil, testLogger())
+	h := New(store, nil, testLogger(), 0)
 
 	rr := do(h, http.MethodGet, "/stacks")
 	if rr.Code != http.StatusOK {
@@ -311,7 +312,7 @@ func TestHandler_UI_Overrides(t *testing.T) {
 			{File: "base.yaml", Overrides: []string{"prod.yaml", "<script>.yaml"}, Status: "ok"},
 		},
 	}}}
-	h := New(store, nil, testLogger())
+	h := New(store, nil, testLogger(), 0)
 
 	rr := do(h, http.MethodGet, "/")
 	if rr.Code != http.StatusOK {
@@ -326,5 +327,112 @@ func TestHandler_UI_Overrides(t *testing.T) {
 	}
 	if !strings.Contains(body, "&lt;script&gt;.yaml") {
 		t.Errorf("HTML body missing the escaped override path; body=%q", body)
+	}
+}
+
+// --- repo + live state (v0.8.0 /stacks UI) ---
+
+func TestHandler_StacksJSON_RepoAndState(t *testing.T) {
+	store := &fakeStore{items: []model.StackStatus{
+		{Name: "web", Repo: "myapp", State: "syncing", OK: true, Revision: "aaa"},
+		{Name: "api", Repo: "myapp", State: "waiting", OK: true, Revision: "aaa"},
+		{Name: "blog", Repo: "blogrepo", State: "", OK: true, Revision: "bbb"},
+	}}
+	h := New(store, nil, testLogger(), 4)
+
+	rr := do(h, http.MethodGet, "/stacks")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	var got struct {
+		Stacks []struct {
+			Name  string `json:"name"`
+			Repo  string `json:"repo"`
+			State string `json:"state"`
+		} `json:"stacks"`
+		Summary struct {
+			Stacks      int `json:"stacks"`
+			Repos       int `json:"repos"`
+			Syncing     int `json:"syncing"`
+			Waiting     int `json:"waiting"`
+			Concurrency int `json:"concurrency"`
+			MaxParallel int `json:"max_parallel"`
+		} `json:"summary"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	byName := map[string]struct{ repo, state string }{}
+	for _, s := range got.Stacks {
+		byName[s.Name] = struct{ repo, state string }{s.Repo, s.State}
+	}
+	if w := byName["web"]; w.repo != "myapp" || w.state != "syncing" {
+		t.Errorf("web = repo %q state %q, want myapp/syncing", w.repo, w.state)
+	}
+	if w := byName["api"]; w.repo != "myapp" || w.state != "waiting" {
+		t.Errorf("api = repo %q state %q, want myapp/waiting", w.repo, w.state)
+	}
+	if w := byName["blog"]; w.repo != "blogrepo" || w.state != "" {
+		t.Errorf("blog = repo %q state %q, want blogrepo/empty", w.repo, w.state)
+	}
+	if got.Summary.Stacks != 3 || got.Summary.Repos != 2 || got.Summary.Syncing != 1 || got.Summary.Waiting != 1 {
+		t.Errorf("summary = %+v, want stacks=3 repos=2 syncing=1 waiting=1", got.Summary)
+	}
+	if got.Summary.Concurrency != 4 || got.Summary.MaxParallel != 2 {
+		t.Errorf("concurrency/maxparallel = %d/%d, want 4/2 (min(4,2 repos))", got.Summary.Concurrency, got.Summary.MaxParallel)
+	}
+}
+
+// Concurrency 0 (GitOps off) must omit the cap from the summary and the payload.
+func TestHandler_SummaryOmitsConcurrencyWhenZero(t *testing.T) {
+	store := &fakeStore{items: []model.StackStatus{{Name: "s", Repo: "r", OK: true}}}
+	h := New(store, nil, testLogger(), 0)
+
+	rr := do(h, http.MethodGet, "/stacks")
+	raw := rr.Body.String()
+	if strings.Contains(raw, "max_parallel") {
+		t.Errorf("max_parallel must be omitted when concurrency=0; body=%q", raw)
+	}
+	if strings.Contains(raw, "concurrency") {
+		t.Errorf("concurrency must be omitted when 0; body=%q", raw)
+	}
+}
+
+func TestHandler_UI_RepoStateAndSummary(t *testing.T) {
+	store := &fakeStore{items: []model.StackStatus{
+		{Name: "web", Repo: "myapp", State: "syncing", OK: true, Revision: "aaa"},
+		{Name: "api", Repo: "myapp", State: "waiting", OK: true, Revision: "aaa"},
+		{Name: "blog", Repo: "blogrepo", State: "", OK: false, ErrorStage: "git", ErrorMessage: "down"},
+	}}
+	h := New(store, nil, testLogger(), 4)
+
+	rr := do(h, http.MethodGet, "/")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	// Repo column values.
+	for _, want := range []string{"myapp", "blogrepo"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("HTML body missing repo %q; body=%q", want, body)
+		}
+	}
+	// State badges.
+	if !strings.Contains(body, "● syncing") {
+		t.Errorf("body missing syncing badge; body=%q", body)
+	}
+	if !strings.Contains(body, "⏸ waiting") {
+		t.Errorf("body missing waiting badge; body=%q", body)
+	}
+	// Summary header counts + concurrency cap line. Counts render inside spans.
+	if !strings.Contains(body, `class="syncing">1</span>`) || !strings.Contains(body, `class="waiting">1</span>`) {
+		t.Errorf("summary missing live counts; body=%q", body)
+	}
+	if !strings.Contains(body, "concurrency: 4") || !strings.Contains(body, "≤2 parallel") {
+		t.Errorf("summary missing concurrency cap; body=%q", body)
+	}
+	// A stack with empty State still renders the legacy ok/err status.
+	if !strings.Contains(body, "git: down") {
+		t.Errorf("idle stack must still render its error status; body=%q", body)
 	}
 }

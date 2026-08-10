@@ -15,23 +15,39 @@
     .err { color: #cf222e; }
     .drift { color: #9a6700; font-weight: 600; }
     .skip { color: #888; }
+    .syncing { color: #0969da; font-weight: 600; }
+    .waiting { color: #9a6700; font-weight: 600; }
     /* override files merged into the row's base file via extra -c flags */
     .ovr { color: #888; padding-left: 1.2rem; }
     small { color: #888; }
     a { color: #0969da; }
+    .summary { color: #555; margin: .25rem 0 0; }
   </style>
 </head>
 <body>
   <h1>GitOps stacks</h1>
   <p><a href="/stacks">JSON</a> · <small>read-only — refresh to update</small></p>
-  {{if not .}}
+  <p class="summary">
+    {{.Summary.Stacks}} stack{{if ne .Summary.Stacks 1}}s{{end}} ·
+    {{.Summary.Repos}} repo{{if ne .Summary.Repos 1}}s{{end}} ·
+    syncing: <span class="syncing">{{.Summary.Syncing}}</span> ·
+    waiting: <span class="waiting">{{.Summary.Waiting}}</span>
+    {{if .Summary.Concurrency}} · concurrency: {{.Summary.Concurrency}} → ≤{{.Summary.MaxParallel}} parallel{{end}}
+  </p>
+  {{if not .Stacks}}
   <p><small>No stacks synced yet.</small></p>
   {{else}}
   <table>
-    <tr><th>stack</th><th>revision</th><th>status</th><th>last sync</th><th>deploys</th><th>files</th><th>desired / drift</th></tr>
-    {{range .}}
+    <tr><th>stack</th><th>repo</th><th>state</th><th>revision</th><th>status</th><th>last sync</th><th>deploys</th><th>files</th><th>desired / drift</th></tr>
+    {{range .Stacks}}
     <tr>
       <td><b>{{.Name}}</b></td>
+      <td>{{if .Repo}}<code>{{.Repo}}</code>{{else}}<small>—</small>{{end}}</td>
+      <td>
+        {{if eq .State "syncing"}}<span class="syncing">● syncing</span>
+        {{else if eq .State "waiting"}}<span class="waiting">⏸ waiting</span>
+        {{else}}<small>idle</small>{{end}}
+      </td>
       <td><code>{{.Revision}}</code></td>
       <td>
         {{if .OK}}<span class="ok">ok</span>

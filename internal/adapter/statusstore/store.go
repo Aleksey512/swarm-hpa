@@ -37,15 +37,40 @@ func New(logger *slog.Logger) *Store {
 
 // SetStatus records the latest status for a stack. It deep-copies the
 // DesiredReplicas map so the caller may keep mutating its own copy afterward.
+// The transient State is reset to "" (idle): a finished sync leaves the stack
+// not-in-flight, and the last result (Revision/OK/...) stays visible until the
+// next pass.
 func (s *Store) SetStatus(name string, status model.StackStatus) {
 	status.Name = name
+	status.State = "" // end of pass → idle; live waiting/syncing is SetState's job
 	status.DesiredReplicas = copyReplicas(status.DesiredReplicas)
 	status.Files = copyFiles(status.Files)
 	s.mu.Lock()
 	s.items[name] = status
 	s.mu.Unlock()
 	s.logger.Debug("statusstore: status set",
-		"stack", name, "revision", status.Revision, "ok", status.OK, "stage", status.ErrorStage)
+		"stack", name, "repo", status.Repo, "revision", status.Revision,
+		"ok", status.OK, "stage", status.ErrorStage)
+}
+
+// SetState is the PARTIAL update for the transient sync state: it sets only
+// Repo and State, preserving the last result a full SetStatus wrote. The loop
+// uses it to flip a stack to "waiting"/"syncing" mid-pass so the /stacks UI can
+// show live parallelism without clobbering Revision/OK/ErrorStage/drift between
+// ticks. If no status exists yet (the API reads before the first sync finishes),
+// a minimal {Name, Repo, State} entry is seeded so the in-flight state is still
+// observable.
+func (s *Store) SetState(name, repo, state string) {
+	s.mu.Lock()
+	st, ok := s.items[name]
+	if !ok {
+		st = model.StackStatus{Name: name}
+	}
+	st.Repo = repo
+	st.State = state
+	s.items[name] = st
+	s.mu.Unlock()
+	s.logger.Debug("statusstore: state set", "stack", name, "repo", repo, "state", state)
 }
 
 // Snapshot returns the status of every known stack, sorted by name. The returned

@@ -34,18 +34,21 @@ var _ http.Handler = (*Handler)(nil)
 
 // Handler serves the read-only GitOps status surface.
 type Handler struct {
-	store  port.StackStatusStore
-	live   port.StackStateReader
-	logger *slog.Logger
+	store       port.StackStatusStore
+	live        port.StackStateReader
+	logger      *slog.Logger
+	concurrency int // configured --gitops-concurrency; 0 ⇒ hide the cap in the UI summary
 }
 
 // New builds the handler. A nil logger falls back to slog.Default. The store is
 // the one the GitOps loop writes; live reads Swarm for on-demand drift.
-func New(store port.StackStatusStore, live port.StackStateReader, logger *slog.Logger) *Handler {
+// concurrency is the daemon's --gitops-concurrency (0 hides the "concurrency →
+// ≤K parallel" line in the UI summary, e.g. when GitOps is off).
+func New(store port.StackStatusStore, live port.StackStateReader, logger *slog.Logger, concurrency int) *Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Handler{store: store, live: live, logger: logger}
+	return &Handler{store: store, live: live, logger: logger, concurrency: concurrency}
 }
 
 // ServeHTTP routes GET /stacks (JSON), GET / and /ui (HTML); 404 otherwise, 405
@@ -66,11 +69,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// serveJSON writes the per-stack status (with on-demand drift) as JSON.
+// serveJSON writes the per-stack status (with on-demand drift) plus a summary as JSON.
 func (h *Handler) serveJSON(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	resp := map[string]any{"stacks": h.buildResponses()}
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
+	if err := json.NewEncoder(w).Encode(h.buildPayload()); err != nil {
 		h.logger.Warn("stackapi: json encode failed", "err", err)
 	}
 }
@@ -78,21 +80,47 @@ func (h *Handler) serveJSON(w http.ResponseWriter, _ *http.Request) {
 // serveUI renders the read-only HTML table. Refresh to update.
 func (h *Handler) serveUI(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := uiTmpl.Execute(w, h.buildResponses()); err != nil {
+	if err := uiTmpl.Execute(w, h.buildPayload()); err != nil {
 		h.logger.Warn("stackapi: ui render failed", "err", err)
 	}
 }
 
-// buildResponses joins stored status with fresh on-demand drift. A failed Swarm
-// read for one stack degrades that stack's drift to an error note (never a 5xx
-// for the whole payload). Drift is skipped when there is no desired snapshot yet
-// (before the first successful render) or no live reader is wired.
-func (h *Handler) buildResponses() []stackResponse {
+// payload is the JSON/UI shape: the per-stack rows plus a one-line summary header
+// (total stacks, distinct repos, currently syncing/waiting, and the concurrency
+// cap when wired). Both /stacks and / render the same payload.
+type payload struct {
+	Stacks  []stackResponse `json:"stacks"`
+	Summary uiSummary       `json:"summary"`
+}
+
+// uiSummary is the one-line aggregate above the table. Syncing/Waiting are the
+// counts of stacks currently in those live states (a Snapshot during a sync pass
+// catches one instant). MaxParallel is min(concurrency, distinct repos); 0 when
+// concurrency is not wired (GitOps off).
+type uiSummary struct {
+	Stacks      int `json:"stacks"`
+	Repos       int `json:"repos"`
+	Syncing     int `json:"syncing"`
+	Waiting     int `json:"waiting"`
+	Concurrency int `json:"concurrency,omitempty"`
+	MaxParallel int `json:"max_parallel,omitempty"`
+}
+
+// buildPayload joins stored status with fresh on-demand drift and folds in the
+// aggregate summary. A failed Swarm read for one stack degrades that stack's drift
+// to an error note (never a 5xx for the whole payload). Drift is skipped when
+// there is no desired snapshot yet (before the first successful render) or no live
+// reader is wired.
+func (h *Handler) buildPayload() payload {
 	statuses := h.store.Snapshot()
 	out := make([]stackResponse, 0, len(statuses))
+	repos := map[string]struct{}{}
+	var syncing, waiting int
 	for _, st := range statuses {
 		resp := stackResponse{
 			Name:            st.Name,
+			Repo:            st.Repo,
+			State:           st.State,
 			Revision:        st.Revision,
 			OK:              st.OK,
 			ErrorStage:      st.ErrorStage,
@@ -101,6 +129,15 @@ func (h *Handler) buildResponses() []stackResponse {
 			DeployCount:     st.DeployCount,
 			DesiredReplicas: st.DesiredReplicas,
 			Files:           toFileResps(st.Files),
+		}
+		if st.Repo != "" {
+			repos[st.Repo] = struct{}{}
+		}
+		switch st.State {
+		case "syncing":
+			syncing++
+		case "waiting":
+			waiting++
 		}
 		if h.live != nil && len(st.DesiredReplicas) > 0 {
 			ctx, cancel := context.WithTimeout(context.Background(), liveTimeout)
@@ -119,12 +156,27 @@ func (h *Handler) buildResponses() []stackResponse {
 		}
 		out = append(out, resp)
 	}
-	return out
+	sum := uiSummary{
+		Stacks:      len(out),
+		Repos:       len(repos),
+		Syncing:     syncing,
+		Waiting:     waiting,
+		Concurrency: h.concurrency,
+	}
+	if h.concurrency > 0 {
+		sum.MaxParallel = h.concurrency
+		if len(repos) > 0 && len(repos) < h.concurrency {
+			sum.MaxParallel = len(repos)
+		}
+	}
+	return payload{Stacks: out, Summary: sum}
 }
 
 // stackResponse is the JSON shape for one stack.
 type stackResponse struct {
 	Name            string            `json:"name"`
+	Repo            string            `json:"repo,omitempty"`
+	State           string            `json:"state,omitempty"`
 	Revision        string            `json:"revision"`
 	OK              bool              `json:"ok"`
 	ErrorStage      string            `json:"error_stage,omitempty"`

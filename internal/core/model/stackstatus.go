@@ -7,8 +7,27 @@ import "time"
 // non-autoscaled, non-global replica snapshot taken from the last successful render
 // (empty before the first render); the drift check compares it against live Swarm
 // state on demand.
+//
+// Repo is the key into the repos map (the name written in repos.yaml) that backs
+// this stack — surfaced in the /stacks UI so the source repo is visible per stack.
+//
+// State is the TRANSIENT sync state of the current (in-flight) sync pass, written
+// live by the loop so the /stacks UI can show which stacks sync in parallel vs
+// serialize on a shared repo. It is a best-effort overlay: a Snapshot taken during
+// a pass catches one instant. Values:
+//   - ""        idle: not currently syncing (between ticks, or never synced)
+//   - "syncing" a sync pass is past the repo lock and running for this stack
+//   - "waiting" blocked on the shared-repo lock because another stack on the same
+//     repo is syncing (one on-disk worktree per repo forces serialization)
+//
+// State is reset to "" by the full SetStatus write at the END of a sync, so the
+// last result (Revision/OK/ErrorStage/...) stays visible between ticks. The loop
+// uses the partial SetState update to flip waiting→syncing mid-pass without
+// clobbering that last result.
 type StackStatus struct {
 	Name            string
+	Repo            string // repos.yaml key backing this stack (for the /stacks UI)
+	State           string // transient: ""|"syncing"|"waiting" — see struct doc
 	Revision        string
 	OK              bool
 	ErrorStage      string // failing stage when OK is false: git|render|secrets|rotate|deploy

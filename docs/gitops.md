@@ -388,22 +388,48 @@ when `--gitops` is enabled.
   ```json
   {
     "stacks": [{
-      "name": "web", "revision": "abc12345", "ok": true,
+      "name": "web", "repo": "my-app", "state": "syncing",
+      "revision": "abc12345", "ok": true,
       "last_sync": "2026-07-03T15:00:00Z", "deploy_count": 5,
       "desired_replicas": {"worker": 2},
       "drift": [{"service": "worker", "desired": 2, "live": 3, "drifted": true}],
       "drifted": true
-    }]
+    }],
+    "summary": {"stacks": 3, "repos": 2, "syncing": 1, "waiting": 1,
+                "concurrency": 4, "max_parallel": 2}
   }
   ```
   `ok` is `false` with `error_stage`/`error_message` when the last sync failed
   (git, render, secrets, rotate, or deploy). `desired_replicas` is the
   non-autoscaled, non-global replica snapshot taken at the last render.
-  For a [multi-file stack](#multiple-compose-files-per-stack) or one using
+  `repo` is the key from `repos.yaml` that backs the stack. `state` is the
+  **transient** sync state of the current pass — `syncing`, `waiting`, or empty
+  (idle) — see [Live sync state](#live-sync-state). For a
+  [multi-file stack](#multiple-compose-files-per-stack) or one using
   [compose overrides](#compose-overrides-merged-deploy), each entry also carries a
-  `files` array — see [Per-file status](#per-file-status-multi-file-stacks).
+  `files` array — see [Per-file status](#per-file-status-multi-file-stacks). The
+  top-level `summary` aggregates totals across all stacks (the `concurrency` /
+  `max_parallel` pair is omitted when GitOps is off).
 - **`GET /`** (or **`GET /ui`**) — a read-only HTML table of the same data
   (refresh to update; no client-side JavaScript).
+
+### Live sync state
+
+Each stack carries a transient `state` so you can see **which stacks sync in
+parallel** right now:
+
+- `syncing` — a sync pass is running for this stack (it holds the repo lock).
+- `waiting` — the stack is blocked on its **shared-repo lock** because another
+  stack on the same repo is syncing. One on-disk worktree per repo forces
+  serialization (see [Concurrency](#concurrency));
+  the `waiting` badge makes that contention visible.
+- empty (idle) — between ticks; the `ok`/`error_stage` status reflects the last
+  completed sync.
+
+A `Snapshot` taken during a pass is one instant, so the badge is a best-effort
+live view. The UI summary line (`N stacks · M repos · syncing: S · waiting: W ·
+concurrency: C → ≤K parallel`) rolls these up, where `K` is
+`min(--gitops-concurrency, distinct repos)`.
 
 ### Drift
 
@@ -445,13 +471,15 @@ single stack-level error). Each stack's `files` array, in deploy order:
   (precedence file → stack → global) — this is where the per-file pull split
   (e.g. app `always`, postgres `changed`) shows up.
 
-The HTML table has a **files** column with one line per group (path · pull policy ·
-status), and each group's override files listed beneath it. On a partial failure
-the failing group is red with its error, earlier groups are green (already applied
-— Swarm deploys are additive and **not** transactional, so they are not rolled
-back), and later groups are grey (`skipped`). The stack-level status still reads
-the failing stage. Single-file stacks show one line. `files` is empty (the UI
-shows `—`) when the stack failed before deploy or has never synced.
+The HTML table has a **repo** column (the `repos.yaml` key backing each stack), a
+**state** column with the live `● syncing` / `⏸ waiting` badge (idle otherwise),
+and a **files** column with one line per group (path · pull policy · status), each
+group's override files listed beneath it. On a partial failure the failing group
+is red with its error, earlier groups are green (already applied — Swarm deploys
+are additive and **not** transactional, so they are not rolled back), and later
+groups are grey (`skipped`). The stack-level status still reads the failing stage.
+Single-file stacks show one line. `files` is empty (the UI shows `—`) when the
+stack failed before deploy or has never synced.
 
 ## Migrating from swarm-cd
 

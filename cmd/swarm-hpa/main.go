@@ -119,7 +119,7 @@ func runManager(ctx context.Context, cfg config.Config, cli *client.Client, logg
 	var stackAPI http.Handler
 	if cfg.GitOpsEnabled {
 		statusStore = statusstore.New(logger)
-		stackAPI = stackapi.New(statusStore, swarmCtl, logger)
+		stackAPI = stackapi.New(statusStore, swarmCtl, logger, cfg.GitOpsConcurrency)
 	}
 
 	application, err := buildApp(cfg, appDeps{

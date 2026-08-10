@@ -637,6 +637,18 @@ func (f *fakeStatusStore) SetStatus(name string, s model.StackStatus) {
 	f.statuses[name] = s
 }
 
+// SetState mirrors the real store's partial update: Repo+State only, preserve
+// the rest. The loop calls it for the waiting/syncing live overlay.
+func (f *fakeStatusStore) SetState(name, repo, state string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s := f.statuses[name] // zero value if absent
+	s.Name = name
+	s.Repo = repo
+	s.State = state
+	f.statuses[name] = s
+}
+
 func (f *fakeStatusStore) Snapshot() []model.StackStatus {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -671,12 +683,16 @@ func waitForStatus(t *testing.T, store *fakeStatusStore, name string) model.Stac
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		if s, ok := store.get(name); ok {
+		// Wait for the TERMINAL status: the loop first writes transient
+		// waiting/syncing states via SetState (a seed entry with OK=false), then
+		// the final full SetStatus which sets State="". Only return once State is
+		// "" so callers see Files/Revision/OK, not the mid-pass overlay.
+		if s, ok := store.get(name); ok && s.State == "" {
 			return s
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	t.Fatalf("status for %q never written", name)
+	t.Fatalf("terminal status for %q never written", name)
 	return model.StackStatus{}
 }
 
@@ -1458,4 +1474,139 @@ func TestLoop_DeployLabelsBeatTopLevelLabelsInDriftSnapshot(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- live sync state (waiting/syncing/idle) for the /stacks UI ---
+
+// blockDeployer blocks inside Deploy until release is closed, signaling entry on
+// entered. It lets a test observe the /stacks snapshot WHILE a stack is mid-sync
+// (deterministic, not a sleep race). It must be released before ctx cancel or the
+// goroutine leaks (goleak would fail).
+type blockDeployer struct {
+	entered chan string
+	release chan struct{}
+}
+
+func (d *blockDeployer) Deploy(_ context.Context, name string, _ []port.ComposeDoc, _ port.DeployOpts) error {
+	d.entered <- name
+	<-d.release
+	return nil
+}
+
+// snapshotByName returns one stack's status from a snapshot, failing if absent.
+func snapshotByName(t *testing.T, store *fakeStatusStore, name string) model.StackStatus {
+	t.Helper()
+	for _, s := range store.Snapshot() {
+		if s.Name == name {
+			return s
+		}
+	}
+	t.Fatalf("no status for %q in snapshot", name)
+	return model.StackStatus{}
+}
+
+// waitForState polls until name's status carries the wanted State, or times out.
+func waitForState(t *testing.T, store *fakeStatusStore, name, want string) model.StackStatus {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		s := snapshotByName(t, store, name)
+		if s.State == want {
+			return s
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("stack %q never reached state %q (last=%q)", name, want, snapshotByName(t, store, name).State)
+	return model.StackStatus{}
+}
+
+// While a stack is past the repo lock and inside Deploy, its live state must be
+// "syncing" (and Repo populated); once the pass finishes, the full SetStatus
+// resets State to "" (idle) and keeps Repo.
+func TestLoop_LiveStateSyncing(t *testing.T) {
+	git := &fakeGit{revs: []string{"aaa"}, files: map[string][]byte{"compose.yaml": []byte("services:\n")}}
+	store := newFakeStatusStore()
+	dep := &blockDeployer{entered: make(chan string, 4), release: make(chan struct{})}
+	src, _ := manualTicks()
+	st := []model.StackConfig{{Name: "s", Repo: "myapp", Branch: "main", ComposeFiles: []model.ComposeFileSpec{{File: "compose.yaml"}}}}
+	l := New(git, fakeRenderer{}, dep, nil, &fakeRec{}, store, st, "changed", false, false, 1, testLogger(), WithTickSource(src))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = l.Run(ctx, time.Hour); close(done) }()
+
+	<-dep.entered // stack is inside Deploy → past the repo lock → must be "syncing"
+	syncing := snapshotByName(t, store, "s")
+	if syncing.State != "syncing" {
+		t.Errorf("mid-sync State = %q, want syncing", syncing.State)
+	}
+	if syncing.Repo != "myapp" {
+		t.Errorf("mid-sync Repo = %q, want myapp", syncing.Repo)
+	}
+
+	close(dep.release)                      // let Deploy return → pass finishes
+	idle := waitForState(t, store, "s", "") // recordStatus resets State to ""
+	if idle.Repo != "myapp" {
+		t.Errorf("post-sync Repo = %q, want myapp (Repo must persist)", idle.Repo)
+	}
+	cancel()
+	<-done
+}
+
+// Two stacks on ONE repo serialize on its single worktree. While the lock holder
+// is stuck inside Deploy ("syncing"), the other is blocked on acquireRepoLock
+// ("waiting"). A third stack on a DIFFERENT repo is "syncing" alongside
+// (cross-repo parallelism is observable).
+func TestLoop_LiveStateWaitingOnSharedRepo(t *testing.T) {
+	git := &fakeGit{revs: []string{"aaa"}, files: map[string][]byte{"compose.yaml": []byte("services:\n")}}
+	store := newFakeStatusStore()
+	dep := &blockDeployer{entered: make(chan string, 4), release: make(chan struct{})}
+	src, _ := manualTicks()
+	st := []model.StackConfig{
+		{Name: "a", Repo: "shared", Branch: "main", ComposeFiles: []model.ComposeFileSpec{{File: "compose.yaml"}}},
+		{Name: "b", Repo: "shared", Branch: "main", ComposeFiles: []model.ComposeFileSpec{{File: "compose.yaml"}}},
+		{Name: "c", Repo: "solo", Branch: "main", ComposeFiles: []model.ComposeFileSpec{{File: "compose.yaml"}}},
+	}
+	// concurrency 3: the two shared-repo stacks still serialize (repo lock), but c
+	// runs alongside the lock holder.
+	l := New(git, fakeRenderer{}, dep, nil, &fakeRec{}, store, st, "changed", false, false, 3, testLogger(), WithTickSource(src))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = l.Run(ctx, time.Hour); close(done) }()
+
+	// Exactly one of the shared-repo stacks holds the lock and enters Deploy; c
+	// (solo repo) also enters Deploy. The other shared-repo stack blocks on the
+	// lock → "waiting". Collect the two deploy entries.
+	first := <-dep.entered
+	second := <-dep.entered
+	// Identify the shared-repo stack NOT yet in Deploy — it must be "waiting".
+	entered := map[string]bool{first: true, second: true}
+	var blocked string
+	for _, name := range []string{"a", "b"} {
+		if !entered[name] {
+			blocked = name
+		}
+	}
+	if blocked == "" {
+		t.Fatalf("expected one of a/b blocked on the shared repo; both entered Deploy: %v", entered)
+	}
+	waiting := waitForState(t, store, blocked, "waiting")
+	if waiting.Repo != "shared" {
+		t.Errorf("blocked stack %q Repo = %q, want shared", blocked, waiting.Repo)
+	}
+	// The two that entered Deploy are "syncing".
+	for _, name := range []string{first, second} {
+		if got := snapshotByName(t, store, name).State; got != "syncing" {
+			t.Errorf("in-deploy stack %q State = %q, want syncing", name, got)
+		}
+	}
+
+	close(dep.release) // release both deploys
+	// All three finish → all reset to idle.
+	for _, name := range []string{"a", "b", "c"} {
+		waitForState(t, store, name, "")
+	}
+	cancel()
+	<-done
 }
