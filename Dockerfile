@@ -24,7 +24,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     -o /out/swarm-hpa ./cmd/swarm-hpa
 
 # ---- runtime stage -------------------------------------------------------
-FROM alpine:3.20
+FROM alpine:3.24
 
 # ca-certificates lets the daemon reach a TLS Prometheus / Docker endpoint.
 # hadolint ignore=DL3018
