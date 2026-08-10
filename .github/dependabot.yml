@@ -1,0 +1,49 @@
+# Dependabot configuration for swarm-hpa.
+# Keeps Go modules, Dockerfile base images, and GitHub Actions versions current.
+# Minor/patch dependency updates are grouped to keep PR volume low; security
+# advisories still open as individual, prioritized PRs.
+version: 2
+
+updates:
+  # Go modules.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+    groups:
+      go-minor-patch:
+        # Group non-major Go updates into one PR. Major updates (v2→v3 etc.) and
+        # security advisories open separately so they get reviewed individually.
+        update-types:
+          - minor
+          - patch
+
+  # Dockerfile base images (golang build stage + alpine runtime).
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(deps)"
+
+  # GitHub Actions versions used in .github/workflows.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      actions:
+        update-types:
+          - minor
+          - patch
