@@ -22,6 +22,16 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # docker/cli v29 removed the deprecated stack.NewStackCommand cobra API that
+      # internal/adapter/stackdeploy/dockercli.go depends on for the programmatic
+      # `docker stack deploy` (build fails: undefined: stack.NewStackCommand). The
+      # 28→29 jump needs a code migration of the stackdeploy adapter — tracked
+      # separately. Ignore its MAJOR bumps until that lands; minor/patch updates of
+      # docker/cli still come through, and security advisories are never ignored.
+      - dependency-name: github.com/docker/cli
+        update-types:
+          - version-update:semver-major
 
   # Dockerfile base images (golang build stage + alpine runtime).
   - package-ecosystem: docker
