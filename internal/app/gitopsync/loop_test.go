@@ -1505,18 +1505,23 @@ func snapshotByName(t *testing.T, store *fakeStatusStore, name string) model.Sta
 	return model.StackStatus{}
 }
 
-// waitForState polls until name's status carries the wanted State, or times out.
+// waitForState polls until name's status exists AND carries the wanted State, or
+// times out. It must NOT fatal on a transiently-absent entry: on a fast machine
+// the observed stack's goroutine may not have reached markState yet when the
+// caller first looks (goroutine scheduling is nondeterministic), so fataling on
+// absence the way snapshotByName does would flake.
 func waitForState(t *testing.T, store *fakeStatusStore, name, want string) model.StackStatus {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		s := snapshotByName(t, store, name)
-		if s.State == want {
-			return s
+		for _, s := range store.Snapshot() {
+			if s.Name == name && s.State == want {
+				return s
+			}
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	t.Fatalf("stack %q never reached state %q (last=%q)", name, want, snapshotByName(t, store, name).State)
+	t.Fatalf("stack %q never reached state %q", name, want)
 	return model.StackStatus{}
 }
 
