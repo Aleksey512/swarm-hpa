@@ -35,7 +35,9 @@ RUN apk add --no-cache ca-certificates \
 COPY --from=build /out/swarm-hpa /usr/local/bin/swarm-hpa
 
 # Run as non-root; the daemon writes nothing to disk (safe for a read-only rootfs).
-USER swarmhpa
+# Numeric UID:GID (65532:65532, the swarmhpa user created above) — resolvable by
+# the host system and by runtimes that skip /etc/passwd resolution.
+USER 65532:65532
 
 # Reinforce the safety default so a bare `docker run` never mutates a live Swarm.
 ENV DRY_RUN=true
@@ -44,8 +46,10 @@ ENV DRY_RUN=true
 EXPOSE 9095
 
 # Healthy when the metrics endpoint serves. NOTE: the port is hard-coded to the
-# :9095 default — adjust if you override METRICS_ADDR.
+# :9095 default — adjust if you override METRICS_ADDR. Exec form (not shell) so
+# the check runs without a shell and wget's own exit code decides health:
+# --spider only checks the header (no body download), -q suppresses output.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget -qO- http://127.0.0.1:9095/metrics >/dev/null 2>&1 || exit 1
+    CMD ["wget", "--spider", "-q", "http://127.0.0.1:9095/metrics"]
 
 ENTRYPOINT ["swarm-hpa"]
