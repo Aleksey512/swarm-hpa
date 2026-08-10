@@ -42,7 +42,7 @@ jobs:
 
       - name: Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           # One build → both registries. metadata-action lowercases the repo
           # name for GHCR and fans every tag rule out to each image below.
