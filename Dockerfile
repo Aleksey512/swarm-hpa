@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---- build stage ---------------------------------------------------------
-FROM golang:1.25-alpine AS build
+FROM golang:1.26-alpine AS build
 
 # VERSION is embedded into the binary via -ldflags (defaults to "dev").
 # TARGETOS/TARGETARCH are auto-populated by BuildKit (declared bare). When a
