@@ -122,6 +122,14 @@ unsupported `include:`.
 ./bin/swarm-hpa --gitops --gitops-configs-path=/etc/swarm-hpa
 ```
 
+The read-only `GET /stacks` UI shows each stack's repo, a **live sync state**
+(`syncing` / `waiting` on a shared-repo lock / idle), per-file deploy status, and
+desired-vs-live drift — so parallel vs serialized syncs are visible at a glance:
+
+<p align="center">
+  <img src="docs/assets/stacks-ui.png" alt="GET /stacks UI: GitOps stacks with repo, live sync state, per-file deploy status, and drift" width="880">
+</p>
+
 See [GitOps stack sync](docs/gitops.md) for the config reference, the
 swarm-cd↔HPA conflict it solves, and the [swarm-cd migration guide](docs/migrating-from-swarm-cd.md).
 
