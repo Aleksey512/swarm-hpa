@@ -71,7 +71,7 @@ func (a *Adapter) Sync(ctx context.Context, stack model.StackConfig) (string, er
 
 	auth, err := basicAuth(repoCfg)
 	if err != nil {
-		log.Warn("git auth misconfigured", "err", err)
+		log.Warn("git auth misconfigured")
 		return "", fmt.Errorf("git: repo %q auth: %w", stack.Repo, err)
 	}
 
