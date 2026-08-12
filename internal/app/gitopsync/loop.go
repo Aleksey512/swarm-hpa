@@ -226,7 +226,7 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 
 	r, err := l.git.Sync(ctx, st)
 	if err != nil {
-		log.Error("gitops: git sync failed", "err", err)
+		log.Error("gitops: git sync failed")
 		l.recorder.SyncError("git")
 		stage, errMsg = "git", err.Error()
 		return
