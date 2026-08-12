@@ -228,10 +228,11 @@ merged labels are what clamp the carried-forward count.
 Each file's relative `configs:` / `secrets:` `file:` paths resolve against **its
 own directory** — even across a multi-file merge group. (Raw
 `docker stack deploy -c base -c override` resolves all relative `file:` paths
-against the *first* `-c` file's directory; the daemon makes each document's
-`file:` absolute against that document's own directory before deploy, so an
-override's files resolve correctly even when it lives elsewhere than the base —
-issue #20.) An override may therefore live in a different directory than its base:
+against the *first* `-c` file's directory; the daemon rebases each document's
+`file:` path to be relative to the base (first) compose file's directory before
+deploy, so docker/cli's first-`-c` resolution finds each file regardless of `-c`
+ordering and regardless of whether `GITOPS_REPOS_PATH` is relative or absolute —
+issues #20, #22.) An override may therefore live in a different directory than its base:
 
 ```yaml
 compose_file:

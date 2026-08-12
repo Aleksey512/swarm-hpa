@@ -50,10 +50,13 @@ func New(state port.StackStateReader, deploy DeployFunc, logger *slog.Logger) *D
 //
 // docs[0] is the base compose file and docs[1:] are its overrides; the order is
 // preserved all the way to the -c flags because it decides which value wins
-// docker/cli's merge. Each temp file is written into its own document's Dir so
-// that document's relative configs:/secrets: paths resolve exactly as they do for
-// its source file (see patch 2026-07-06-14.11) — an override may live in a
-// different directory than the base.
+// docker/cli's merge. Each temp file is written into its own document's Dir
+// (co-location, see patch 2026-07-06-14.11): the BASE temp file's directory is
+// docker/cli's anchor for resolving relative configs:/secrets: file: paths, and
+// every document's file: is rebased relative to that base directory before
+// marshal (see rebaseFileObjects) so an override living in a different directory
+// than its base still resolves correctly — independent of -c ordering and of
+// whether GitOpsReposPath is relative or absolute. See issues #20, #22.
 func (d *Deployer) Deploy(ctx context.Context, name string, docs []port.ComposeDoc, opts port.DeployOpts) error {
 	log := d.logger.With(slog.String("stack", name))
 	if len(docs) == 0 {
@@ -96,27 +99,36 @@ func (d *Deployer) Deploy(ctx context.Context, name string, docs []port.ComposeD
 	return nil
 }
 
-// absolutizeFileObjects rewrites each relative configs:/secrets: `file:` path in
-// the compose document to an absolute path resolved against dir, and returns the
-// number of paths rewritten (for DEBUG logging).
+// rebaseFileObjects rewrites each relative configs:/secrets: `file:` path in the
+// compose document so it is relative to baseDir — the directory of the BASE
+// (first) compose file of the merge group — and returns the number of paths
+// rewritten (for DEBUG logging).
 //
 // docker stack deploy -c base -c override resolves ALL relative configs:/
 // secrets: file: paths against the FIRST -c file's directory, regardless of which
-// document declared them. So an override whose files live in its own (different)
-// directory cannot be referenced by a plain relative path: co-locating each temp
-// compose next to its own source is not enough. Making the path absolute before
-// the temp compose is handed to docker makes resolution independent of -c
-// ordering, matching how rotate (core/compose.ApplyRotation) and
+// document declared them. Rather than make paths absolute (which re-ties
+// resolution to the process CWD and to whether GitOpsReposPath is relative or
+// absolute), we rebase every document's file: to be relative to the base
+// directory: docker then resolves it against the base temp compose's directory
+// (== baseDir, since the base temp compose is co-located with its source) and
+// finds the file. Because filepath.Rel cancels the common worktree prefix shared
+// by every document in a group (one stack -> one repo -> one worktree), the
+// rebased path is identical whether GitOpsReposPath is relative ("repos", the
+// default) or absolute — so this fixes both the cross-directory override case
+// (#20) and the relative-GitOpsReposPath regression that the prior absolutize
+// approach introduced (#22). The base document (docDir == baseDir) is the
+// identity case — Rel(baseDir, Join(baseDir, f)) == f — so its paths are left
+// untouched, matching how rotate (core/compose.ApplyRotation) and
 // compose.DiscoverSecretFiles resolve each document against its own directory.
-// See issue #20.
 //
-// Already-absolute paths, non-file objects (e.g. external: true), non-map
-// objects, empty file: values, and a missing configs:/secrets: section are left
-// untouched. When dir is empty (the OS-temp fallback used by tests and callers
-// that don't carry relative paths), relative paths are left as-is: there is no
-// base to resolve against, so the historical behavior is preserved.
-func absolutizeFileObjects(compose map[string]any, dir string) int {
-	if dir == "" {
+// Already-absolute paths (docker opens them directly), non-file objects (e.g.
+// external: true), non-map objects, empty file: values, and a missing configs:/
+// secrets: section are left untouched. When docDir or baseDir is empty (the
+// OS-temp fallback used by tests and callers that don't carry relative paths),
+// relative paths are left as-is: there is no anchor to rebase against, so the
+// historical behavior is preserved.
+func rebaseFileObjects(compose map[string]any, docDir, baseDir string, log *slog.Logger) int {
+	if docDir == "" || baseDir == "" {
 		return 0
 	}
 	rewritten := 0
@@ -134,7 +146,17 @@ func absolutizeFileObjects(compose map[string]any, dir string) int {
 			if !ok || f == "" || filepath.IsAbs(f) {
 				continue
 			}
-			obj["file"] = filepath.Join(dir, f)
+			actual := filepath.Join(docDir, f)
+			rel, err := filepath.Rel(baseDir, actual)
+			if err != nil {
+				// Cannot happen within one worktree (all doc.Dirs share its
+				// prefix); leave the path unchanged as a defensive fallback so a
+				// future cross-volume case is diagnosable rather than fatal.
+				log.Debug("stackdeploy: cannot rebase configs/secrets file path; leaving unchanged",
+					"source_dir", docDir, "base_dir", baseDir, "file", f, "err", err)
+				continue
+			}
+			obj["file"] = rel
 			rewritten++
 		}
 	}
@@ -154,22 +176,32 @@ func writeTempComposeGroup(name string, docs []port.ComposeDoc, log *slog.Logger
 			}
 		}
 	}
+	// The base (first) document's directory is docker/cli's resolution anchor:
+	// `docker stack deploy -c base -c override` resolves ALL relative configs:/
+	// secrets: file: paths against the FIRST -c file's directory. Rebase every
+	// document's file: relative to it so docker finds each file regardless of -c
+	// ordering and regardless of whether GitOpsReposPath is relative or absolute.
+	// See rebaseFileObjects (issues #20, #22).
+	baseDir := ""
+	if len(docs) > 0 {
+		baseDir = docs[0].Dir
+	}
 	for i, doc := range docs {
 		if doc.Dir != "" {
-			log.Debug("stackdeploy: writing temp compose next to source compose (relative configs:/secrets: paths resolve against the same dir, not /tmp)",
+			log.Debug("stackdeploy: writing temp compose next to source compose (the base temp file's dir is docker's anchor for relative configs:/secrets: paths)",
 				"index", i, "source_dir", doc.Dir)
 		}
-		// Absolutize each document's configs:/secrets: file: paths against the
-		// document's own directory BEFORE marshal. docker stack deploy -c base -c
-		// override resolves ALL relative file: paths against the FIRST -c file's
+		// Rebase each document's configs:/secrets: file: paths relative to the
+		// base directory BEFORE marshal. docker stack deploy -c base -c override
+		// resolves ALL relative file: paths against the FIRST -c file's
 		// directory, so co-locating each temp next to its own source is not enough
-		// when an override lives in a different directory than the base: an
-		// absolute path resolves correctly regardless of -c ordering. This matches
-		// how rotate (core/compose.ApplyRotation) and DiscoverSecretFiles resolve
-		// each document against its own directory. See issue #20.
-		if n := absolutizeFileObjects(doc.Map, doc.Dir); n > 0 {
-			log.Debug("stackdeploy: absolutized configs/secrets file paths",
-				"index", i, "source_dir", doc.Dir, "rewritten", n)
+		// when an override lives in a different directory than the base: a path
+		// expressed relative to the base dir resolves correctly regardless of -c
+		// ordering, and filepath.Rel cancels the worktree prefix so it is correct
+		// whether GitOpsReposPath is relative or absolute. See issue #20, #22.
+		if n := rebaseFileObjects(doc.Map, doc.Dir, baseDir, log); n > 0 {
+			log.Debug("stackdeploy: rebased configs/secrets file paths relative to base compose dir",
+				"index", i, "source_dir", doc.Dir, "base_dir", baseDir, "rewritten", n)
 		}
 		tmp, werr := writeTempCompose(name, doc.Dir, doc.Map)
 		if werr != nil {
@@ -185,12 +217,16 @@ func writeTempComposeGroup(name string, docs []port.ComposeDoc, log *slog.Logger
 // file and returns its path. The caller removes it.
 //
 // When dir is non-empty, the temp file is written there — i.e. next to the
-// original compose file — so that relative configs:/secrets: file paths inside
-// the compose resolve against the original compose's directory. `docker stack
-// deploy` resolves such paths relative to the compose file it is handed, so a
+// original compose file. `docker stack deploy` resolves a compose's relative
+// configs:/secrets: file: paths relative to the compose file it is given, so a
 // temp file written to the OS temp dir (/tmp) breaks relative paths (they would
-// be resolved under /tmp, where the referenced files do not exist). An empty dir
-// falls back to the OS temp dir.
+// be resolved under /tmp, where the referenced files do not exist). For a merge
+// group only the FIRST -c file's directory is docker's anchor; the base temp
+// file (written here into docs[0].Dir) therefore anchors resolution, and every
+// document's file: is rebased relative to it before marshal (see
+// rebaseFileObjects). Co-locating override temp files is retained as a safety
+// net for other relative path types docker resolves (build:, env_file:). An
+// empty dir falls back to the OS temp dir.
 func writeTempCompose(name, dir string, compose map[string]any) (string, error) {
 	b, err := yaml.Marshal(compose)
 	if err != nil {
