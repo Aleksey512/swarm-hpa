@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"log/slog"
@@ -481,11 +482,12 @@ func TestDeploy_NoDocumentsIsAnError(t *testing.T) {
 // relative configs:/secrets: file paths inside it resolve against the source
 // compose's directory (the worktree), not the OS temp dir.
 //
-// Note: co-location is now belt-and-suspenders for configs:/secrets: resolution.
-// The real cross-directory fix is per-document absolutization
-// (TestDeploy_AbsolutizesConfigSecretFilePathsPerDocument, issue #20);
-// co-location is retained because it may still help other relative-path types
-// (build:, env_file:) that docker stack deploy resolves.
+// Note: co-location of the BASE temp file is load-bearing — its directory is
+// docker/cli's anchor for resolving relative configs:/secrets: file: paths, and
+// every document's file: is rebased relative to it
+// (TestDeploy_RebasesConfigSecretFilePathsRelativeToBase, issues #20, #22).
+// Co-location of override temp files is belt-and-suspenders for other relative-
+// path types (build:, env_file:) that docker stack deploy resolves.
 func TestDeploy_TempComposeCoLocatedWithSource(t *testing.T) {
 	dir := t.TempDir() // stands in for the source compose file's directory
 	rec := &recorder{}
@@ -614,43 +616,69 @@ func TestDeploy_MergeGroupCarryForwardReachesEveryDocument(t *testing.T) {
 	}
 }
 
-// TestAbsolutizeFileObjects covers the pure helper that rewrites each document's
-// relative configs:/secrets: file: path to absolute (against the document's own
-// dir) before the temp compose is handed to docker.
-func TestAbsolutizeFileObjects(t *testing.T) {
-	const dir = "/work/betapp/miran/dev" // stands in for an absolute source dir
+// TestRebaseFileObjects covers the pure helper that rewrites each document's
+// relative configs:/secrets: file: path to be relative to the BASE (first)
+// compose file's directory (baseDir) before the temp compose is handed to
+// docker. The base document (docDir == baseDir) is the identity case; override
+// documents are rebased so docker/cli's first-`-c` resolution rule finds them.
+func TestRebaseFileObjects(t *testing.T) {
+	const (
+		baseDir = "/work/betapp/base"     // stands in for the base (first) compose dir
+		ovrDir  = "/work/betapp/override" // an override living in a different dir
+	)
+	// wantRel is the expected rebased path: file f in docDir, expressed relative
+	// to baseDir. Rel cannot fail for these in-worktree test paths.
+	wantRel := func(f string) string {
+		rel, err := filepath.Rel(baseDir, filepath.Join(ovrDir, f))
+		if err != nil {
+			t.Fatalf("wantRel: Rel: %v", err)
+		}
+		return rel
+	}
 	cases := []struct {
 		name      string
 		compose   map[string]any
-		dir       string
+		docDir    string
+		baseDir   string
 		wantCount int
 		check     func(*testing.T, map[string]any)
 	}{
 		{
-			name: "relative config file absolutized against dir",
+			name: "base document: relative file unchanged (Rel identity)",
 			compose: map[string]any{"configs": map[string]any{
-				"postgres-init": map[string]any{"file": "configs/postgres-init.sql"},
+				"db-init": map[string]any{"file": "configs/db-init.sql"},
 			}},
-			dir:       dir,
-			wantCount: 1,
+			docDir: baseDir, baseDir: baseDir, wantCount: 1,
 			check: func(t *testing.T, c map[string]any) {
-				got := c["configs"].(map[string]any)["postgres-init"].(map[string]any)["file"]
-				if want := filepath.Join(dir, "configs/postgres-init.sql"); got != want {
-					t.Errorf("file = %v, want %q", got, want)
+				got := c["configs"].(map[string]any)["db-init"].(map[string]any)["file"]
+				if want := "configs/db-init.sql"; got != want {
+					t.Errorf("base doc file = %v, want %q (Rel identity leaves it untouched)", got, want)
 				}
 			},
 		},
 		{
-			name: "relative secret file absolutized too",
+			name: "override document: config file rebased relative to base dir",
+			compose: map[string]any{"configs": map[string]any{
+				"postgres-init": map[string]any{"file": "configs/postgres-init.sql"},
+			}},
+			docDir: ovrDir, baseDir: baseDir, wantCount: 1,
+			check: func(t *testing.T, c map[string]any) {
+				got := c["configs"].(map[string]any)["postgres-init"].(map[string]any)["file"]
+				if want := wantRel("configs/postgres-init.sql"); got != want {
+					t.Errorf("override doc file = %v, want %q (relative to base dir)", got, want)
+				}
+			},
+		},
+		{
+			name: "override document: secret file rebased too",
 			compose: map[string]any{"secrets": map[string]any{
 				"tls": map[string]any{"file": "secrets/tls.crt"},
 			}},
-			dir:       dir,
-			wantCount: 1,
+			docDir: ovrDir, baseDir: baseDir, wantCount: 1,
 			check: func(t *testing.T, c map[string]any) {
 				got := c["secrets"].(map[string]any)["tls"].(map[string]any)["file"]
-				if want := filepath.Join(dir, "secrets/tls.crt"); got != want {
-					t.Errorf("file = %v, want %q", got, want)
+				if want := wantRel("secrets/tls.crt"); got != want {
+					t.Errorf("override doc secret file = %v, want %q (relative to base dir)", got, want)
 				}
 			},
 		},
@@ -659,8 +687,7 @@ func TestAbsolutizeFileObjects(t *testing.T) {
 			compose: map[string]any{"configs": map[string]any{
 				"x": map[string]any{"file": "/etc/config/x.yml"},
 			}},
-			dir:       dir,
-			wantCount: 0,
+			docDir: ovrDir, baseDir: baseDir, wantCount: 0,
 			check: func(t *testing.T, c map[string]any) {
 				got := c["configs"].(map[string]any)["x"].(map[string]any)["file"]
 				if got != "/etc/config/x.yml" {
@@ -673,8 +700,7 @@ func TestAbsolutizeFileObjects(t *testing.T) {
 			compose: map[string]any{"secrets": map[string]any{
 				"ext": map[string]any{"external": true, "name": "ext-secret"},
 			}},
-			dir:       dir,
-			wantCount: 0,
+			docDir: ovrDir, baseDir: baseDir, wantCount: 0,
 			check: func(t *testing.T, c map[string]any) {
 				obj := c["secrets"].(map[string]any)["ext"].(map[string]any)
 				if _, has := obj["file"]; has {
@@ -683,23 +709,34 @@ func TestAbsolutizeFileObjects(t *testing.T) {
 			},
 		},
 		{
-			name:      "missing configs/secrets sections is a no-op",
-			compose:   map[string]any{"services": map[string]any{"web": map[string]any{"image": "nginx"}}},
-			dir:       dir,
-			wantCount: 0,
-			check:     func(*testing.T, map[string]any) {},
+			name:    "missing configs/secrets sections is a no-op",
+			compose: map[string]any{"services": map[string]any{"web": map[string]any{"image": "nginx"}}},
+			docDir:  ovrDir, baseDir: baseDir, wantCount: 0,
+			check: func(*testing.T, map[string]any) {},
 		},
 		{
-			name: "empty dir leaves relative path as-is (OS-temp fallback)",
+			name: "empty baseDir (no anchor) leaves relative path as-is",
 			compose: map[string]any{"configs": map[string]any{
 				"x": map[string]any{"file": "c/x.yml"},
 			}},
-			dir:       "",
-			wantCount: 0,
+			docDir: ovrDir, baseDir: "", wantCount: 0,
 			check: func(t *testing.T, c map[string]any) {
 				got := c["configs"].(map[string]any)["x"].(map[string]any)["file"]
 				if got != "c/x.yml" {
-					t.Errorf("file = %v, want relative path preserved when dir is empty", got)
+					t.Errorf("file = %v, want relative path preserved when baseDir is empty", got)
+				}
+			},
+		},
+		{
+			name: "empty docDir (OS-temp fallback) leaves relative path as-is",
+			compose: map[string]any{"configs": map[string]any{
+				"x": map[string]any{"file": "c/x.yml"},
+			}},
+			docDir: "", baseDir: baseDir, wantCount: 0,
+			check: func(t *testing.T, c map[string]any) {
+				got := c["configs"].(map[string]any)["x"].(map[string]any)["file"]
+				if got != "c/x.yml" {
+					t.Errorf("file = %v, want relative path preserved when docDir is empty", got)
 				}
 			},
 		},
@@ -708,8 +745,7 @@ func TestAbsolutizeFileObjects(t *testing.T) {
 			compose: map[string]any{"configs": map[string]any{
 				"x": map[string]any{"file": ""},
 			}},
-			dir:       dir,
-			wantCount: 0,
+			docDir: ovrDir, baseDir: baseDir, wantCount: 0,
 			check: func(t *testing.T, c map[string]any) {
 				got := c["configs"].(map[string]any)["x"].(map[string]any)["file"]
 				if got != "" {
@@ -722,9 +758,8 @@ func TestAbsolutizeFileObjects(t *testing.T) {
 			compose: map[string]any{"configs": map[string]any{
 				"scalar": "not-a-map",
 			}},
-			dir:       dir,
-			wantCount: 0,
-			check:     func(*testing.T, map[string]any) {},
+			docDir: ovrDir, baseDir: baseDir, wantCount: 0,
+			check: func(*testing.T, map[string]any) {},
 		},
 		{
 			name: "count covers both configs and secrets in one call",
@@ -732,14 +767,13 @@ func TestAbsolutizeFileObjects(t *testing.T) {
 				"configs": map[string]any{"a": map[string]any{"file": "a.yml"}},
 				"secrets": map[string]any{"b": map[string]any{"file": "b.key"}},
 			},
-			dir:       dir,
-			wantCount: 2,
-			check:     func(*testing.T, map[string]any) {},
+			docDir: ovrDir, baseDir: baseDir, wantCount: 2,
+			check: func(*testing.T, map[string]any) {},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := absolutizeFileObjects(tc.compose, tc.dir)
+			got := rebaseFileObjects(tc.compose, tc.docDir, tc.baseDir, discardLog())
 			if got != tc.wantCount {
 				t.Errorf("rewritten = %d, want %d", got, tc.wantCount)
 			}
@@ -750,16 +784,18 @@ func TestAbsolutizeFileObjects(t *testing.T) {
 	}
 }
 
-// TestDeploy_AbsolutizesConfigSecretFilePathsPerDocument is the regression test
+// TestDeploy_RebasesConfigSecretFilePathsRelativeToBase is the regression test
 // for issue #20: `docker stack deploy -c base -c override` resolves ALL relative
 // configs:/secrets: file: paths against the FIRST -c file's directory, so an
 // override whose files live in a different directory than the base could not be
 // referenced by a plain relative path (deploy and rotate disagreed). The deployer
-// must make each document's file: absolute — resolved against that document's OWN
-// directory — in the materialized temp compose, so resolution is independent of
-// -c ordering. Asserted via the recorder seam, which captures each marshalled
-// temp compose.
-func TestDeploy_AbsolutizesConfigSecretFilePathsPerDocument(t *testing.T) {
+// rebases each document's file: relative to the BASE (first) compose file's
+// directory in the materialized temp compose, so docker/cli's first-`-c`
+// resolution finds it regardless of -c ordering. Asserted via the recorder seam,
+// which captures each marshalled temp compose. (Dirs here are absolute — the
+// relative-GitOpsReposPath case is covered by
+// TestDeploy_RebasesConfigSecretFilePathsWithRelativeReposPath.)
+func TestDeploy_RebasesConfigSecretFilePathsRelativeToBase(t *testing.T) {
 	baseDir, ovrDir := t.TempDir(), t.TempDir() // distinct source compose dirs
 	rec := &recorder{}
 	dep := New(fakeState{svcs: []model.StackService{}}, rec.fn(), discardLog())
@@ -797,18 +833,113 @@ func TestDeploy_AbsolutizesConfigSecretFilePathsPerDocument(t *testing.T) {
 	fileOf := func(doc map[string]any, name string) any {
 		return doc["configs"].(map[string]any)[name].(map[string]any)["file"]
 	}
-	// Base document: its config file: is absolutized against the BASE dir.
-	if got, want := fileOf(rec.deployed[0], "db-init"), filepath.Join(baseDir, "configs/db-init.sql"); got != want {
-		t.Errorf("base doc db-init.file = %v, want %q", got, want)
+	// Base document (docDir == baseDir): Rel identity leaves its relative file: as-is.
+	if got, want := fileOf(rec.deployed[0], "db-init"), "configs/db-init.sql"; got != want {
+		t.Errorf("base doc db-init.file = %v, want %q (unchanged relative path)", got, want)
 	}
-	// Override document — the issue #20 core: its relative file: MUST be absolute,
-	// resolved against the OVERRIDE's own dir, not the base dir (which is what
-	// docker/cli would do on its own).
-	if got, want := fileOf(rec.deployed[1], "postgres-init"), filepath.Join(ovrDir, "configs/postgres-init.sql"); got != want {
-		t.Errorf("override doc postgres-init.file = %v, want %q (must resolve against the override's own dir, not the base dir)", got, want)
+	// Override document — the issue #20 core: its relative file: is rebased
+	// relative to the BASE dir (so docker/cli resolves it against the base temp
+	// file's directory), NOT left relative to the override's own dir.
+	wantOvr, err := filepath.Rel(baseDir, filepath.Join(ovrDir, "configs/postgres-init.sql"))
+	if err != nil {
+		t.Fatalf("expected override rel: %v", err)
+	}
+	if got := fileOf(rec.deployed[1], "postgres-init"); got != wantOvr {
+		t.Errorf("override doc postgres-init.file = %v, want %q (relative to the base dir)", got, wantOvr)
 	}
 	// Empty-Dir fallback document: relative path preserved (no base to resolve against).
 	if got := fileOf(rec.deployed[2], "x"); got != "c/x.yml" {
 		t.Errorf("empty-dir doc x.file = %v, want %q (relative preserved when Dir unset)", got, "c/x.yml")
+	}
+}
+
+// TestDeploy_RebasesConfigSecretFilePathsWithRelativeReposPath is the regression
+// test for issue #22: the previous absolutize approach used filepath.Join without
+// filepath.Abs, so when GitOpsReposPath is relative (the DEFAULT, "repos") the
+// "absolute" path stayed relative and docker/cli resolved it against the first -c
+// file's directory, doubling the worktree segment and breaking EVERY stack with
+// file-backed configs/secrets. This case uses RELATIVE doc.Dirs (mirroring the
+// production default) — the case the absolutize tests hid by using absolute
+// t.TempDir() dirs. The rebase cancels the worktree prefix via filepath.Rel, so
+// the override file: contains no worktree segment at all and is independent of
+// the relative/absolute shape of GitOpsReposPath.
+func TestDeploy_RebasesConfigSecretFilePathsWithRelativeReposPath(t *testing.T) {
+	// Relative dirs, as the loop builds them under the default GitOpsReposPath
+	// ("repos"): doc.Dir = filepath.Join(worktree, filepath.Dir(composeFile)).
+	const (
+		baseDir = "repos/st/shared"   // docs[0] — the base, docker/cli's anchor
+		ovrDir  = "repos/st/override" // docs[1] — an override in a sibling dir
+	)
+	// Run inside a temp CWD and materialize the relative worktree dirs on disk:
+	// writeTempCompose writes each temp compose into doc.Dir, so the relative
+	// dirs must exist relative to CWD exactly as they do in production (where the
+	// process CWD contains the relative repos/ worktree). No test in this package
+	// uses t.Parallel(), so a scoped Chdir is safe.
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	tmpRoot := t.TempDir()
+	if err := os.Chdir(tmpRoot); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+	for _, d := range []string{baseDir, ovrDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+	}
+
+	rec := &recorder{}
+	dep := New(fakeState{svcs: []model.StackService{}}, rec.fn(), discardLog())
+
+	docs := []port.ComposeDoc{
+		{
+			Map: map[string]any{
+				"services": map[string]any{},
+				"configs": map[string]any{
+					"db-init": map[string]any{"file": "configs/db-init.sql"},
+				},
+			},
+			Dir: baseDir,
+		},
+		{
+			Map: map[string]any{"configs": map[string]any{
+				"postgres-init": map[string]any{"file": "configs/postgres-init.sql"},
+			}},
+			Dir: ovrDir,
+		},
+	}
+	if err := dep.Deploy(context.Background(), "mystack", docs, port.DeployOpts{}); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if len(rec.deployed) != 2 {
+		t.Fatalf("deployed %d documents, want 2", len(rec.deployed))
+	}
+	fileOf := func(doc map[string]any, name string) any {
+		return doc["configs"].(map[string]any)[name].(map[string]any)["file"]
+	}
+	// Base document: relative file: unchanged (Rel identity).
+	if got, want := fileOf(rec.deployed[0], "db-init"), "configs/db-init.sql"; got != want {
+		t.Errorf("base doc db-init.file = %v, want %q", got, want)
+	}
+	// Override document: rebased relative to the base dir.
+	wantOvr, err := filepath.Rel(baseDir, filepath.Join(ovrDir, "configs/postgres-init.sql"))
+	if err != nil {
+		t.Fatalf("expected override rel: %v", err)
+	}
+	got := fileOf(rec.deployed[1], "postgres-init")
+	if got != wantOvr {
+		t.Errorf("override doc postgres-init.file = %v, want %q (relative to the base dir)", got, wantOvr)
+	}
+	// Issue #22 regression signature: under the old absolutize-without-Abs bug the
+	// path stayed "repos/st/override/configs/postgres-init.sql" (still containing
+	// the worktree segment "repos/st"), which docker then doubled. The rebase
+	// cancels the worktree prefix, so the rebased path must contain no "repos/st"
+	// segment at all.
+	if s, ok := got.(string); !ok {
+		t.Errorf("override doc postgres-init.file = %T, want string", got)
+	} else if strings.Contains(s, "repos/st") {
+		t.Errorf("override doc postgres-init.file = %q must not contain the worktree segment \"repos/st\" (the #22 doubling bug)", s)
 	}
 }
