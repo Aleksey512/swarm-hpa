@@ -226,8 +226,12 @@ merged labels are what clamp the carried-forward count.
 #### Relative paths, secrets and rotation
 
 Each file's relative `configs:` / `secrets:` `file:` paths resolve against **its
-own directory**, exactly as they would if you ran `docker stack deploy` yourself.
-An override may therefore live in a different directory than its base:
+own directory** — even across a multi-file merge group. (Raw
+`docker stack deploy -c base -c override` resolves all relative `file:` paths
+against the *first* `-c` file's directory; the daemon makes each document's
+`file:` absolute against that document's own directory before deploy, so an
+override's files resolve correctly even when it lives elsewhere than the base —
+issue #20.) An override may therefore live in a different directory than its base:
 
 ```yaml
 compose_file:
