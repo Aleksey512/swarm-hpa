@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 
 	"github.com/goccy/go-yaml"
 
@@ -95,6 +96,51 @@ func (d *Deployer) Deploy(ctx context.Context, name string, docs []port.ComposeD
 	return nil
 }
 
+// absolutizeFileObjects rewrites each relative configs:/secrets: `file:` path in
+// the compose document to an absolute path resolved against dir, and returns the
+// number of paths rewritten (for DEBUG logging).
+//
+// docker stack deploy -c base -c override resolves ALL relative configs:/
+// secrets: file: paths against the FIRST -c file's directory, regardless of which
+// document declared them. So an override whose files live in its own (different)
+// directory cannot be referenced by a plain relative path: co-locating each temp
+// compose next to its own source is not enough. Making the path absolute before
+// the temp compose is handed to docker makes resolution independent of -c
+// ordering, matching how rotate (core/compose.ApplyRotation) and
+// compose.DiscoverSecretFiles resolve each document against its own directory.
+// See issue #20.
+//
+// Already-absolute paths, non-file objects (e.g. external: true), non-map
+// objects, empty file: values, and a missing configs:/secrets: section are left
+// untouched. When dir is empty (the OS-temp fallback used by tests and callers
+// that don't carry relative paths), relative paths are left as-is: there is no
+// base to resolve against, so the historical behavior is preserved.
+func absolutizeFileObjects(compose map[string]any, dir string) int {
+	if dir == "" {
+		return 0
+	}
+	rewritten := 0
+	for _, section := range []string{"configs", "secrets"} {
+		objects, ok := compose[section].(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, raw := range objects {
+			obj, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			f, ok := obj["file"].(string)
+			if !ok || f == "" || filepath.IsAbs(f) {
+				continue
+			}
+			obj["file"] = filepath.Join(dir, f)
+			rewritten++
+		}
+	}
+	return rewritten
+}
+
 // writeTempComposeGroup materializes every document of a merge group as a temp
 // compose file, in `-c` order. The returned cleanup removes every file that was
 // created — including on a partial failure, so a mid-group write error never
@@ -112,6 +158,18 @@ func writeTempComposeGroup(name string, docs []port.ComposeDoc, log *slog.Logger
 		if doc.Dir != "" {
 			log.Debug("stackdeploy: writing temp compose next to source compose (relative configs:/secrets: paths resolve against the same dir, not /tmp)",
 				"index", i, "source_dir", doc.Dir)
+		}
+		// Absolutize each document's configs:/secrets: file: paths against the
+		// document's own directory BEFORE marshal. docker stack deploy -c base -c
+		// override resolves ALL relative file: paths against the FIRST -c file's
+		// directory, so co-locating each temp next to its own source is not enough
+		// when an override lives in a different directory than the base: an
+		// absolute path resolves correctly regardless of -c ordering. This matches
+		// how rotate (core/compose.ApplyRotation) and DiscoverSecretFiles resolve
+		// each document against its own directory. See issue #20.
+		if n := absolutizeFileObjects(doc.Map, doc.Dir); n > 0 {
+			log.Debug("stackdeploy: absolutized configs/secrets file paths",
+				"index", i, "source_dir", doc.Dir, "rewritten", n)
 		}
 		tmp, werr := writeTempCompose(name, doc.Dir, doc.Map)
 		if werr != nil {

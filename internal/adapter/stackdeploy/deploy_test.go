@@ -480,6 +480,12 @@ func TestDeploy_NoDocumentsIsAnError(t *testing.T) {
 // carries a Dir, its temp compose MUST be written in that directory so the
 // relative configs:/secrets: file paths inside it resolve against the source
 // compose's directory (the worktree), not the OS temp dir.
+//
+// Note: co-location is now belt-and-suspenders for configs:/secrets: resolution.
+// The real cross-directory fix is per-document absolutization
+// (TestDeploy_AbsolutizesConfigSecretFilePathsPerDocument, issue #20);
+// co-location is retained because it may still help other relative-path types
+// (build:, env_file:) that docker stack deploy resolves.
 func TestDeploy_TempComposeCoLocatedWithSource(t *testing.T) {
 	dir := t.TempDir() // stands in for the source compose file's directory
 	rec := &recorder{}
@@ -605,5 +611,204 @@ func TestDeploy_MergeGroupCarryForwardReachesEveryDocument(t *testing.T) {
 		if got := replicasOf(servicesOf(rec.deployed[i]), "web"); got != 7 {
 			t.Errorf("deployed document %d web replicas = %d, want 7 (HPA count must survive the merge)", i, got)
 		}
+	}
+}
+
+// TestAbsolutizeFileObjects covers the pure helper that rewrites each document's
+// relative configs:/secrets: file: path to absolute (against the document's own
+// dir) before the temp compose is handed to docker.
+func TestAbsolutizeFileObjects(t *testing.T) {
+	const dir = "/work/betapp/miran/dev" // stands in for an absolute source dir
+	cases := []struct {
+		name      string
+		compose   map[string]any
+		dir       string
+		wantCount int
+		check     func(*testing.T, map[string]any)
+	}{
+		{
+			name: "relative config file absolutized against dir",
+			compose: map[string]any{"configs": map[string]any{
+				"postgres-init": map[string]any{"file": "configs/postgres-init.sql"},
+			}},
+			dir:       dir,
+			wantCount: 1,
+			check: func(t *testing.T, c map[string]any) {
+				got := c["configs"].(map[string]any)["postgres-init"].(map[string]any)["file"]
+				if want := filepath.Join(dir, "configs/postgres-init.sql"); got != want {
+					t.Errorf("file = %v, want %q", got, want)
+				}
+			},
+		},
+		{
+			name: "relative secret file absolutized too",
+			compose: map[string]any{"secrets": map[string]any{
+				"tls": map[string]any{"file": "secrets/tls.crt"},
+			}},
+			dir:       dir,
+			wantCount: 1,
+			check: func(t *testing.T, c map[string]any) {
+				got := c["secrets"].(map[string]any)["tls"].(map[string]any)["file"]
+				if want := filepath.Join(dir, "secrets/tls.crt"); got != want {
+					t.Errorf("file = %v, want %q", got, want)
+				}
+			},
+		},
+		{
+			name: "already-absolute file left unchanged",
+			compose: map[string]any{"configs": map[string]any{
+				"x": map[string]any{"file": "/etc/config/x.yml"},
+			}},
+			dir:       dir,
+			wantCount: 0,
+			check: func(t *testing.T, c map[string]any) {
+				got := c["configs"].(map[string]any)["x"].(map[string]any)["file"]
+				if got != "/etc/config/x.yml" {
+					t.Errorf("file = %v, want unchanged absolute path", got)
+				}
+			},
+		},
+		{
+			name: "non-file (external) object untouched",
+			compose: map[string]any{"secrets": map[string]any{
+				"ext": map[string]any{"external": true, "name": "ext-secret"},
+			}},
+			dir:       dir,
+			wantCount: 0,
+			check: func(t *testing.T, c map[string]any) {
+				obj := c["secrets"].(map[string]any)["ext"].(map[string]any)
+				if _, has := obj["file"]; has {
+					t.Error("non-file object gained a file: key")
+				}
+			},
+		},
+		{
+			name:      "missing configs/secrets sections is a no-op",
+			compose:   map[string]any{"services": map[string]any{"web": map[string]any{"image": "nginx"}}},
+			dir:       dir,
+			wantCount: 0,
+			check:     func(*testing.T, map[string]any) {},
+		},
+		{
+			name: "empty dir leaves relative path as-is (OS-temp fallback)",
+			compose: map[string]any{"configs": map[string]any{
+				"x": map[string]any{"file": "c/x.yml"},
+			}},
+			dir:       "",
+			wantCount: 0,
+			check: func(t *testing.T, c map[string]any) {
+				got := c["configs"].(map[string]any)["x"].(map[string]any)["file"]
+				if got != "c/x.yml" {
+					t.Errorf("file = %v, want relative path preserved when dir is empty", got)
+				}
+			},
+		},
+		{
+			name: "empty file value untouched",
+			compose: map[string]any{"configs": map[string]any{
+				"x": map[string]any{"file": ""},
+			}},
+			dir:       dir,
+			wantCount: 0,
+			check: func(t *testing.T, c map[string]any) {
+				got := c["configs"].(map[string]any)["x"].(map[string]any)["file"]
+				if got != "" {
+					t.Errorf("file = %v, want empty preserved", got)
+				}
+			},
+		},
+		{
+			name: "non-map object value is skipped without panic",
+			compose: map[string]any{"configs": map[string]any{
+				"scalar": "not-a-map",
+			}},
+			dir:       dir,
+			wantCount: 0,
+			check:     func(*testing.T, map[string]any) {},
+		},
+		{
+			name: "count covers both configs and secrets in one call",
+			compose: map[string]any{
+				"configs": map[string]any{"a": map[string]any{"file": "a.yml"}},
+				"secrets": map[string]any{"b": map[string]any{"file": "b.key"}},
+			},
+			dir:       dir,
+			wantCount: 2,
+			check:     func(*testing.T, map[string]any) {},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := absolutizeFileObjects(tc.compose, tc.dir)
+			if got != tc.wantCount {
+				t.Errorf("rewritten = %d, want %d", got, tc.wantCount)
+			}
+			if tc.check != nil {
+				tc.check(t, tc.compose)
+			}
+		})
+	}
+}
+
+// TestDeploy_AbsolutizesConfigSecretFilePathsPerDocument is the regression test
+// for issue #20: `docker stack deploy -c base -c override` resolves ALL relative
+// configs:/secrets: file: paths against the FIRST -c file's directory, so an
+// override whose files live in a different directory than the base could not be
+// referenced by a plain relative path (deploy and rotate disagreed). The deployer
+// must make each document's file: absolute — resolved against that document's OWN
+// directory — in the materialized temp compose, so resolution is independent of
+// -c ordering. Asserted via the recorder seam, which captures each marshalled
+// temp compose.
+func TestDeploy_AbsolutizesConfigSecretFilePathsPerDocument(t *testing.T) {
+	baseDir, ovrDir := t.TempDir(), t.TempDir() // distinct source compose dirs
+	rec := &recorder{}
+	dep := New(fakeState{svcs: []model.StackService{}}, rec.fn(), discardLog())
+
+	docs := []port.ComposeDoc{
+		{
+			Map: map[string]any{
+				// carry-forward needs at least one services map in the group.
+				"services": map[string]any{},
+				"configs": map[string]any{
+					"db-init": map[string]any{"file": "configs/db-init.sql"},
+				},
+			},
+			Dir: baseDir,
+		},
+		{
+			Map: map[string]any{"configs": map[string]any{
+				"postgres-init": map[string]any{"file": "configs/postgres-init.sql"},
+			}},
+			Dir: ovrDir, // different directory than the base — the issue #20 case
+		},
+		{
+			Map: map[string]any{"configs": map[string]any{
+				"x": map[string]any{"file": "c/x.yml"},
+			}},
+			Dir: "", // OS-temp fallback: relative path must be left as-is
+		},
+	}
+	if err := dep.Deploy(context.Background(), "mystack", docs, port.DeployOpts{}); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if len(rec.deployed) != 3 {
+		t.Fatalf("deployed %d documents, want 3", len(rec.deployed))
+	}
+	fileOf := func(doc map[string]any, name string) any {
+		return doc["configs"].(map[string]any)[name].(map[string]any)["file"]
+	}
+	// Base document: its config file: is absolutized against the BASE dir.
+	if got, want := fileOf(rec.deployed[0], "db-init"), filepath.Join(baseDir, "configs/db-init.sql"); got != want {
+		t.Errorf("base doc db-init.file = %v, want %q", got, want)
+	}
+	// Override document — the issue #20 core: its relative file: MUST be absolute,
+	// resolved against the OVERRIDE's own dir, not the base dir (which is what
+	// docker/cli would do on its own).
+	if got, want := fileOf(rec.deployed[1], "postgres-init"), filepath.Join(ovrDir, "configs/postgres-init.sql"); got != want {
+		t.Errorf("override doc postgres-init.file = %v, want %q (must resolve against the override's own dir, not the base dir)", got, want)
+	}
+	// Empty-Dir fallback document: relative path preserved (no base to resolve against).
+	if got := fileOf(rec.deployed[2], "x"); got != "c/x.yml" {
+		t.Errorf("empty-dir doc x.file = %v, want %q (relative preserved when Dir unset)", got, "c/x.yml")
 	}
 }
