@@ -38,12 +38,32 @@ func (r *recordingRecorder) DeployNetworkErrors(stack string, count int) {
 
 func itoa(n int) string { return strconv.Itoa(n) }
 
+// syncBuffer is a mutex-guarded bytes.Buffer so the logger can be shared by
+// the test goroutine and the post-deploy check goroutine without a data race
+// (slog does not serialize writes to the underlying writer).
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // bufLogger returns a logger writing to buf so ERROR lines can be asserted.
-func bufLogger(buf *bytes.Buffer) *slog.Logger {
+func bufLogger(buf *syncBuffer) *slog.Logger {
 	return slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 }
 
-func newCheckLoop(t *testing.T, tracker *taskerrors.Tracker, rec port.Recorder, logBuf *bytes.Buffer) *Loop {
+func newCheckLoop(t *testing.T, tracker *taskerrors.Tracker, rec port.Recorder, logBuf *syncBuffer) *Loop {
 	t.Helper()
 	git := &fakeGit{revs: []string{"r1"}, files: map[string][]byte{"c.yml": {}}}
 	l := New(git, fakeRenderer{}, &fakeDeployer{}, nil, rec, nil,
@@ -62,7 +82,7 @@ func TestPostDeployCheckDetectsVxlan(t *testing.T) {
 			Class: string(coretaskerrors.ClassVxlanFileExists), Since: now.Add(-time.Minute)},
 	})
 
-	var logBuf bytes.Buffer
+	var logBuf syncBuffer
 	rec := &recordingRecorder{}
 	l := newCheckLoop(t, tracker, rec, &logBuf)
 	l.checkClock = func() time.Time { return now } // match the tracker's pinned clock
@@ -93,7 +113,7 @@ func TestPostDeployCheckCleanWindow(t *testing.T) {
 			Class: string(coretaskerrors.ClassOther), Since: now.Add(-time.Minute)},
 	})
 
-	var logBuf bytes.Buffer
+	var logBuf syncBuffer
 	rec := &recordingRecorder{}
 	l := newCheckLoop(t, tracker, rec, &logBuf)
 	l.checkClock = func() time.Time { return now }
@@ -116,7 +136,7 @@ func TestPostDeployCheckSkipsOtherStacks(t *testing.T) {
 			Class: string(coretaskerrors.ClassVxlanFileExists), Since: now.Add(-time.Minute)},
 	})
 
-	var logBuf bytes.Buffer
+	var logBuf syncBuffer
 	rec := &recordingRecorder{}
 	l := newCheckLoop(t, tracker, rec, &logBuf)
 	l.checkClock = func() time.Time { return now }
@@ -140,7 +160,7 @@ func TestSchedulePostDeployCheckFiresAndCancels(t *testing.T) {
 			Class: string(coretaskerrors.ClassVxlanFileExists), Since: time.Now().Add(-time.Minute)},
 	})
 
-	var logBuf bytes.Buffer
+	var logBuf syncBuffer
 	rec := &recordingRecorder{}
 	l := newCheckLoop(t, tracker, rec, &logBuf)
 	l.checkDelay = 20 * time.Millisecond
@@ -165,7 +185,7 @@ func TestSchedulePostDeployCheckFiresAndCancels(t *testing.T) {
 	}
 
 	// Cancelled context: no fire, no panic.
-	var logBuf2 bytes.Buffer
+	var logBuf2 syncBuffer
 	l2 := newCheckLoop(t, tracker, rec, &logBuf2)
 	l2.checkDelay = time.Hour
 	ctx2, cancel2 := context.WithCancel(context.Background())
@@ -177,7 +197,7 @@ func TestSchedulePostDeployCheckFiresAndCancels(t *testing.T) {
 }
 
 func TestSchedulePostDeployCheckDisabledWithoutTracker(t *testing.T) {
-	var logBuf bytes.Buffer
+	var logBuf syncBuffer
 	git := &fakeGit{revs: []string{"r1"}, files: map[string][]byte{"c.yml": {}}}
 	l := New(git, fakeRenderer{}, &fakeDeployer{}, nil, port.NopRecorder{}, nil,
 		stacks("admin", "c.yml"), "changed", false, false, 1, bufLogger(&logBuf))

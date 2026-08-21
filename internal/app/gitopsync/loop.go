@@ -479,14 +479,15 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 // ctx — a shutdown cancels pending checks). The check reads the SHARED
 // task-error window the reconciler feeds and alerts when the deployed stack's
 // services hit the vxlan/network-sandbox bug. No-op when the tracker is not
-// wired.
+// wired. delay is captured BEFORE the goroutine starts so tests may adjust
+// the loop's fields while an armed check is in flight without a data race.
 func (l *Loop) schedulePostDeployCheck(ctx context.Context, stack string) {
 	if l.errorTracker == nil {
 		return
 	}
-	delay := l.checkDelay
+	delay, window := l.checkDelay, l.errorWindow
 	l.logger.Info("gitops: post-deploy error check scheduled",
-		"stack", stack, "delay", delay.String(), "window", l.errorWindow.String())
+		"stack", stack, "delay", delay.String(), "window", window.String())
 	go func() {
 		timer := time.NewTimer(delay)
 		defer timer.Stop()
