@@ -401,7 +401,8 @@ when `--gitops` is enabled.
       "drifted": true
     }],
     "summary": {"stacks": 3, "repos": 2, "syncing": 1, "waiting": 1,
-                "concurrency": 4, "max_parallel": 2}
+                "concurrency": 4, "max_parallel": 2, "orphans": 1},
+    "orphans": [{"name": "whoami", "namespace": ""}]
   }
   ```
   `ok` is `false` with `error_stage`/`error_message` when the last sync failed
@@ -417,6 +418,34 @@ when `--gitops` is enabled.
   `max_parallel` pair is omitted when GitOps is off).
 - **`GET /`** (or **`GET /ui`**) — a read-only HTML table of the same data
   (refresh to update; no client-side JavaScript).
+
+### Orphan services
+
+The same payload carries an `orphans` array (and an `orphans` count in
+`summary`): **live Swarm services that no configured stack declares and the
+autoscaler does not manage** — leftovers from a removed stack, a bare
+`docker service create`, or a stack whose namespace is no longer in
+`stacks.yaml`. A service is *not* an orphan when its
+`com.docker.stack.namespace` label names a configured stack (the
+authoritative attribution `docker stack deploy` stamps) or when it carries
+any `swarm.autoscaler.*` label. Each entry shows the service's full Swarm
+name and its claimed namespace (empty when it was created outside any stack).
+The scan runs on demand per request (like drift) and is read-only; disable it
+with `--orphans-scan=false`. The count is also exported as the
+`swarm_hpa_orphan_services` gauge.
+
+### Post-deploy network-error alert
+
+After every successful stack deploy the loop waits `--deploy-check-delay`
+(default 90s) and then checks the shared task-error window
+([observability](observability.md#task-error--orphan-series-v090)) for the
+deployed stack's services. If any hit the old Docker networking bug —
+`network sandbox join failed … error creating vxlan interface: file exists` —
+it logs at **ERROR** (`gitops deploy: network sandbox (vxlan) task errors
+detected`, naming the stack, service, class and count) and increments
+`swarm_hpa_deploy_network_errors_total` / `swarm_hpa_stack_task_errors_total`.
+That ERROR line is the alert hook for log pipelines; the
+`swarm_hpa_task_errors_window` gauge is the Prometheus-native equivalent.
 
 ### Live sync state
 

@@ -52,6 +52,9 @@ the cluster-wide [`agents`](metrics-providers.md#agents-provider-agents) source.
 | `--agent-stale-timeout` | `AGENT_STALE_TIMEOUT` | `45s` | A report older than this is evicted, so a dead node stops influencing decisions. Must be `> 0`. |
 | `--rebalance-threshold` | `REBALANCE_THRESHOLD` | `0.30` | Node-CPU spread **fraction** in `(0,1]` at/above which a rebalance is proposed. `0.30` = 30 percentage points between the busiest and idlest node. |
 | `--rebalance-cooldown` | `REBALANCE_COOLDOWN` | `10m` | Minimum interval between **rebalance** actions on the same service. `0` disables. |
+| `--task-errors-window` | `TASK_ERRORS_WINDOW` | `5m` | Sliding window for per-service task-error metrics and the post-deploy alert (`swarm_hpa_task_errors_window`). `0` disables. |
+| `--deploy-check-delay` | `DEPLOY_CHECK_DELAY` | `90s` | How long after a successful stack deploy to wait before checking the task-error window for network (vxlan/sandbox-join) failures; a hit logs at ERROR. `0` = check immediately. |
+| `--orphans-scan` | `ORPHANS_SCAN` | `true` | Enable the read-only orphan-services scan in the `/stacks` UI/API (live services in no configured stack, not managed by the autoscaler). |
 
 ## Agent-mode flags & environment
 

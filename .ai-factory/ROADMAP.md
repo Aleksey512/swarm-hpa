@@ -51,6 +51,10 @@
 
 - [x] **Repo + live sync state in /stacks UI** — the read-only `GET /stacks` surface now shows, per stack, the repo key from `repos.yaml` and a transient sync state (`syncing` / `waiting` / idle) so parallel vs serialized syncs are observable: stacks on distinct repos sync concurrently while stacks sharing one repo serialize on its single on-disk worktree, and the `waiting` badge makes that contention visible. The loop writes `waiting` before the shared-repo lock and `syncing` after acquiring it via a new partial-update `SetState` port method (Repo+State only, preserving the last result so the live overlay never clobbers revision/OK/drift); the full `SetStatus` at pass end resets State to idle. A summary line rolls up totals (`N stacks · M repos · syncing/waiting · concurrency: C → ≤K parallel`). Backward compatible: `repo`/`state` are additive `omitempty` fields.
 
+## v0.9.0
+
+- [x] **Task-error observability + orphan services** — the reconciler now scans the cluster's tasks once per tick (unfiltered, so superseded/rejected tasks are included), classifies status errors into a bounded set (`vxlan_file_exists`, `network_sandbox_join_failed`, `other` — raw error text never becomes a metric label), and feeds a shared sliding window (`--task-errors-window`, default 5m) that powers `swarm_hpa_task_errors_window{service,class}`, the `/stacks` surface and a post-deploy GitOps alert: `--deploy-check-delay` (default 90s) after each successful deploy, network-class errors on the deployed stack's services log at ERROR (`gitops deploy: network sandbox (vxlan) task errors detected`) and increment `swarm_hpa_deploy_network_errors_total`/`swarm_hpa_stack_task_errors_total` — the old Docker vxlan bug is finally alertable. `GET /stacks` (JSON + UI) additionally lists orphan services (live services in no configured stack, not under `swarm.autoscaler.*` management; attributed by the `com.docker.stack.namespace` label, scanned on demand) with `swarm_hpa_orphan_services` as the metric; `--orphans-scan` toggles it. New read-only `port.SwarmRead` (AllTasks/AllServices); everything is observation-only, no new mutations.
+
 ## Completed
 
 | Milestone | Date |
@@ -80,3 +84,4 @@
 | Multiple compose files per stack + per-file pull policy (v0.6.0) | 2026-07-24 |
 | Compose overrides per stack file — merged deploy (v0.7.0) | 2026-08-07 |
 | Repo + live sync state in /stacks UI (v0.8.0) | 2026-08-10 |
+| Task-error observability + orphan services (v0.9.0) | 2026-08-21 |

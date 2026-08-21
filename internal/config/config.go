@@ -126,6 +126,21 @@ type Config struct {
 	// min(GitOpsConcurrency, number of distinct repos). Default 4; must be >= 1.
 	GitOpsConcurrency int
 
+	// --- Task-error observability + orphan services (v0.9.0) ---
+
+	// TaskErrorsWindow is the sliding window over which task status errors are
+	// counted per service and class (the swarm_hpa_task_errors_window gauge and
+	// the post-deploy alert both read it). Default 5m.
+	TaskErrorsWindow time.Duration
+	// DeployCheckDelay is how long after a successful stack deploy the GitOps
+	// loop waits before checking the task-error window for the deployed
+	// stack's services (Swarm needs a moment to schedule tasks and record
+	// their failures). Default 90s.
+	DeployCheckDelay time.Duration
+	// OrphansScan, when true (the default), enables the orphan-services scan
+	// in the /stacks surface (read-only; on demand per request).
+	OrphansScan bool
+
 	// --- Agent-only settings (ignored in manager mode) ---
 
 	// ManagerURL is the base URL of the manager's ingest endpoint (required in
@@ -166,6 +181,10 @@ func Default() Config {
 		GitOpsAutoRotate:  true,
 		GitOpsConcurrency: 4,
 
+		TaskErrorsWindow: 5 * time.Minute,
+		DeployCheckDelay: 90 * time.Second,
+		OrphansScan:      true,
+
 		ReportInterval: 15 * time.Second,
 	}
 }
@@ -189,6 +208,12 @@ func (c Config) Validate() error {
 	}
 	if c.HealThreshold < 0 {
 		return fmt.Errorf("heal_threshold must be >= 0, got %s", c.HealThreshold)
+	}
+	if c.TaskErrorsWindow < 0 {
+		return fmt.Errorf("task_errors_window must be >= 0, got %s", c.TaskErrorsWindow)
+	}
+	if c.DeployCheckDelay < 0 {
+		return fmt.Errorf("deploy_check_delay must be >= 0, got %s", c.DeployCheckDelay)
 	}
 	switch c.Mode {
 	case ModeManager:
@@ -314,6 +339,9 @@ func (c Config) LogValue() slog.Value {
 		slog.String("gitops_pull_policy", c.GitOpsPullPolicy),
 		slog.Bool("gitops_auto_rotate", c.GitOpsAutoRotate),
 		slog.Int("gitops_concurrency", c.GitOpsConcurrency),
+		slog.Duration("task_errors_window", c.TaskErrorsWindow),
+		slog.Duration("deploy_check_delay", c.DeployCheckDelay),
+		slog.Bool("orphans_scan", c.OrphansScan),
 	)
 }
 
@@ -505,6 +533,27 @@ func LoadArgs(args []string, lookupEnv func(string) (string, bool)) (Config, err
 		}
 		c.GitOpsConcurrency = n
 	}
+	if v, ok := lookupEnv("TASK_ERRORS_WINDOW"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("env TASK_ERRORS_WINDOW=%q: %w", v, err)
+		}
+		c.TaskErrorsWindow = d
+	}
+	if v, ok := lookupEnv("DEPLOY_CHECK_DELAY"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("env DEPLOY_CHECK_DELAY=%q: %w", v, err)
+		}
+		c.DeployCheckDelay = d
+	}
+	if v, ok := lookupEnv("ORPHANS_SCAN"); ok {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("env ORPHANS_SCAN=%q: %w", v, err)
+		}
+		c.OrphansScan = b
+	}
 
 	fs := flag.NewFlagSet("swarm-hpa", flag.ContinueOnError)
 	fs.SetOutput(io.Discard) // errors are returned, not printed
@@ -537,6 +586,9 @@ func LoadArgs(args []string, lookupEnv func(string) (string, bool)) (Config, err
 	gitopsPullPolicy := fs.String("gitops-pull-policy", c.GitOpsPullPolicy, "manager: image resolution mode for `docker stack deploy`: always|changed")
 	gitopsAutoRotate := fs.Bool("gitops-auto-rotate", c.GitOpsAutoRotate, "manager: rename file-backed configs/secrets to <stack>-<name>-<hash> so Swarm picks up changed content (swarm-cd auto_rotate)")
 	gitopsConcurrency := fs.Int("gitops-concurrency", c.GitOpsConcurrency, "manager: max number of stacks synced in parallel (stacks sharing a repo serialize)")
+	taskErrorsWindow := fs.Duration("task-errors-window", c.TaskErrorsWindow, "manager: sliding window for per-service task-error metrics and the post-deploy alert")
+	deployCheckDelay := fs.Duration("deploy-check-delay", c.DeployCheckDelay, "manager: delay after a successful deploy before checking the task-error window for network (vxlan) failures")
+	orphansScan := fs.Bool("orphans-scan", c.OrphansScan, "manager: enable the orphan-services scan in the /stacks surface (read-only)")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, fmt.Errorf("parse flags: %w", err)
@@ -571,6 +623,9 @@ func LoadArgs(args []string, lookupEnv func(string) (string, bool)) (Config, err
 	c.GitOpsPullPolicy = *gitopsPullPolicy
 	c.GitOpsAutoRotate = *gitopsAutoRotate
 	c.GitOpsConcurrency = *gitopsConcurrency
+	c.TaskErrorsWindow = *taskErrorsWindow
+	c.DeployCheckDelay = *deployCheckDelay
+	c.OrphansScan = *orphansScan
 
 	if err := c.Validate(); err != nil {
 		return Config{}, fmt.Errorf("invalid configuration: %w", err)

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Aleksey512/swarm-hpa/internal/app/reconciler"
+	"github.com/Aleksey512/swarm-hpa/internal/app/taskerrors"
 	"github.com/Aleksey512/swarm-hpa/internal/config"
 	"github.com/Aleksey512/swarm-hpa/internal/core/port"
 )
@@ -24,6 +25,8 @@ type appDeps struct {
 	metricsHandler http.Handler          // served at /metrics (recorder.Handler() on the real path)
 	stackAPI       http.Handler          // GitOps status API + UI (GET /stacks, GET /); nil when gitops is off
 	loads          reconciler.LoadSource // agent registry; nil disables rebalancing
+	errorSink      *taskerrors.Tracker   // shared task-error window; nil disables the task-error metrics
+	swarmRead      port.SwarmRead        // cluster-wide reads for the task-error pass; nil disables it
 	logger         *slog.Logger
 	reconcilerOpts []reconciler.Option // e.g. reconciler.WithTickSource for deterministic tests
 }
@@ -68,6 +71,9 @@ func buildApp(cfg config.Config, deps appDeps) (*app, error) {
 	opts := deps.reconcilerOpts
 	if deps.loads != nil {
 		opts = append(opts, reconciler.WithRebalancing(deps.loads, cfg.RebalanceThreshold))
+	}
+	if deps.errorSink != nil && deps.swarmRead != nil {
+		opts = append(opts, reconciler.WithTaskErrors(deps.errorSink, deps.swarmRead, cfg.TaskErrorsWindow))
 	}
 	rec := reconciler.New(deps.swarm, deps.metrics, guard, clock, cfg.HealThreshold, deps.recorder, stabilizer, cfg.MaxScaleStep, logger, opts...)
 

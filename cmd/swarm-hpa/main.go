@@ -26,6 +26,7 @@ import (
 	swarmadapter "github.com/Aleksey512/swarm-hpa/internal/adapter/swarm"
 	"github.com/Aleksey512/swarm-hpa/internal/app/gitopsync"
 	"github.com/Aleksey512/swarm-hpa/internal/app/registry"
+	"github.com/Aleksey512/swarm-hpa/internal/app/taskerrors"
 	"github.com/Aleksey512/swarm-hpa/internal/config"
 	"github.com/Aleksey512/swarm-hpa/internal/core/port"
 )
@@ -105,6 +106,15 @@ func runManager(ctx context.Context, cfg config.Config, cli *client.Client, logg
 	// recorder also satisfies registry.Recorder (agent-fleet metrics).
 	reg := registry.New(cfg.AgentStaleTimeout, port.SystemClock{}, recorder, logger)
 
+	// Shared task-error sliding window (v0.9.0): the reconciler feeds it each
+	// tick (cluster-wide, unfiltered task scan); the per-service Prometheus
+	// gauge, the /stacks surface and the post-deploy GitOps alert read it. The
+	// swarm adapter satisfies port.SwarmRead for the cluster-wide reads.
+	errorTracker := taskerrors.NewTracker(port.SystemClock{}, logger)
+	logger.Info("task-error observability enabled",
+		"window", cfg.TaskErrorsWindow,
+		"deploy_check_delay", cfg.DeployCheckDelay)
+
 	metricsProvider, err := metrics.New(cfg, cli, reg, logger)
 	if err != nil {
 		logger.Error("failed to build metrics provider", "err", err)
@@ -119,7 +129,22 @@ func runManager(ctx context.Context, cfg config.Config, cli *client.Client, logg
 	var stackAPI http.Handler
 	if cfg.GitOpsEnabled {
 		statusStore = statusstore.New(logger)
-		stackAPI = stackapi.New(statusStore, swarmCtl, logger, cfg.GitOpsConcurrency)
+		h := stackapi.New(statusStore, swarmCtl, logger, cfg.GitOpsConcurrency)
+		if cfg.OrphansScan {
+			stackNames := make([]string, 0)
+			// The scan needs the configured stack names; they come from
+			// stacks.yaml, loaded in the gitops block below. Defer the wiring
+			// to that block via the closure over stackNames.
+			if _, cfgStacks, err := config.LoadGitOps(cfg.GitOpsConfigsPath); err == nil {
+				for _, s := range cfgStacks {
+					stackNames = append(stackNames, s.Name)
+				}
+			} else {
+				logger.Warn("stacks.yaml load failed; orphan scan disabled until next restart", "err", err)
+			}
+			h = h.WithOrphanScan(swarmCtl, stackNames, recorder)
+		}
+		stackAPI = h
 	}
 
 	application, err := buildApp(cfg, appDeps{
@@ -130,6 +155,8 @@ func runManager(ctx context.Context, cfg config.Config, cli *client.Client, logg
 		metricsHandler: recorder.Handler(),
 		stackAPI:       stackAPI,
 		loads:          reg,
+		errorSink:      errorTracker,
+		swarmRead:      swarmCtl,
 		logger:         logger,
 	})
 	if err != nil {
@@ -177,6 +204,7 @@ func runManager(ctx context.Context, cfg config.Config, cli *client.Client, logg
 			recorder, statusStore, stacks,
 			cfg.GitOpsPullPolicy, cfg.DryRun, cfg.GitOpsAutoRotate, cfg.GitOpsConcurrency, logger,
 			gitopsync.WithStackStateReader(swarmCtl),
+			gitopsync.WithTaskErrorTracker(errorTracker, cfg.DeployCheckDelay, cfg.TaskErrorsWindow),
 		)
 		sopsStacks := 0
 		// deployGroups is the number of `docker stack deploy` invocations one sync

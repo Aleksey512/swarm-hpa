@@ -70,6 +70,13 @@ services explicitly marked for management are acted upon. Transparency beats
   mutating actions (scale, force-update) are enabled explicitly.
 - **Self-observability** — structured logging (`log/slog`) plus a Prometheus
   `/metrics` endpoint exposing the daemon's own decisions and actions.
+- **Task-error observability + orphan services (v0.9.0)** — cluster-wide task
+  status errors classified into a bounded set (the Docker
+  `vxlan interface: file exists` sandbox-join bug above all) and counted per
+  service over a sliding window (`swarm_hpa_task_errors_window`), with a
+  post-deploy GitOps alert at ERROR (`--deploy-check-delay`); plus an
+  orphan-services scan in the `/stacks` UI/API (live services in no
+  configured stack, not autoscaler-managed; `swarm_hpa_orphan_services`).
 
 ## Tech Stack
 
