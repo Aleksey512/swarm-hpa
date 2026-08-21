@@ -316,3 +316,76 @@ func TestAdapterTasksAndNodes(t *testing.T) {
 		t.Fatalf("nodes = %+v, err = %v", nodes, err)
 	}
 }
+
+func TestAdapterAllTasks(t *testing.T) {
+	// AllTasks must pass EMPTY filters so superseded/rejected tasks (the ones
+	// carrying task status errors) are returned.
+	a := &Adapter{cli: &fakeDockerAPI{
+		tasks: []dswarm.Task{
+			{ID: "t-run", ServiceID: "s1", DesiredState: dswarm.TaskStateRunning,
+				Status: dswarm.TaskStatus{State: dswarm.TaskStateRunning}},
+			{ID: "t-rejected", ServiceID: "s1", DesiredState: dswarm.TaskStateShutdown,
+				Status: dswarm.TaskStatus{State: dswarm.TaskStateRejected,
+					Err: `network sandbox join failed: subnet sandbox join failed for "10.0.18.0/24": error creating vxlan interface: file exists`}},
+		},
+	}, logger: discardLogger()}
+
+	got, err := a.AllTasks(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want both running and rejected tasks unfiltered, got %d: %+v", len(got), got)
+	}
+	if got[1].Err == "" {
+		t.Error("rejected task error text must be carried through")
+	}
+}
+
+func TestAdapterAllTasksError(t *testing.T) {
+	a := &Adapter{cli: &fakeDockerAPI{err: errors.New("boom")}, logger: discardLogger()}
+	if _, err := a.AllTasks(context.Background()); err == nil {
+		t.Error("expected TaskList error to propagate")
+	}
+}
+
+func TestAdapterAllServices(t *testing.T) {
+	stackSvc := dswarm.Service{
+		ID: "s1",
+		Spec: dswarm.ServiceSpec{
+			Annotations: dswarm.Annotations{
+				Name:   "admin_admin_analytics",
+				Labels: map[string]string{"com.docker.stack.namespace": "admin"},
+			},
+		},
+	}
+	looseSvc := dswarm.Service{
+		ID:   "s2",
+		Spec: dswarm.ServiceSpec{Annotations: dswarm.Annotations{Name: "whoami"}},
+	}
+	a := &Adapter{cli: &fakeDockerAPI{services: []dswarm.Service{stackSvc, looseSvc}}, logger: discardLogger()}
+
+	got, err := a.AllServices(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 services, got %d", len(got))
+	}
+	if got[0].Name != "admin_admin_analytics" || got[0].StackNamespace != "admin" {
+		t.Errorf("stack service mapped wrong: %+v", got[0])
+	}
+	if got[1].Name != "whoami" || got[1].StackNamespace != "" {
+		t.Errorf("non-stack service mapped wrong: %+v", got[1])
+	}
+	if got[0].Labels["com.docker.stack.namespace"] != "admin" {
+		t.Errorf("labels must carry through: %+v", got[0].Labels)
+	}
+}
+
+func TestAdapterAllServicesError(t *testing.T) {
+	a := &Adapter{cli: &fakeDockerAPI{err: errors.New("boom")}, logger: discardLogger()}
+	if _, err := a.AllServices(context.Background()); err == nil {
+		t.Error("expected ServiceList error to propagate")
+	}
+}

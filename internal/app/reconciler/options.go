@@ -3,7 +3,9 @@ package reconciler
 import (
 	"time"
 
+	apptaskerrors "github.com/Aleksey512/swarm-hpa/internal/app/taskerrors"
 	"github.com/Aleksey512/swarm-hpa/internal/core/model"
+	"github.com/Aleksey512/swarm-hpa/internal/core/port"
 )
 
 // LoadSource yields the latest per-node agent reports the rebalancer compares.
@@ -22,6 +24,23 @@ func WithRebalancing(loads LoadSource, threshold float64) Option {
 			r.loads = loads
 			r.rebalanceThreshold = threshold
 		}
+	}
+}
+
+// WithTaskErrors enables the cluster-wide task-error observation pass: once
+// per tick the reconciler reads ALL tasks (unfiltered — superseded/rejected
+// tasks included) plus ALL services (for the ServiceID→name join), classifies
+// every task status error, and records it in the shared sliding-window
+// tracker. The tracker is the same instance the metrics exporter and the
+// post-deploy GitOps alert read. A nil sink or nil read leaves the feature
+// off — no extra Docker calls are issued.
+func WithTaskErrors(sink *apptaskerrors.Tracker, read port.SwarmRead) Option {
+	return func(r *Reconciler) {
+		if sink == nil || read == nil {
+			return
+		}
+		r.errorSink = sink
+		r.errRead = read
 	}
 }
 
