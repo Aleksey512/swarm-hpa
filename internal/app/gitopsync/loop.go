@@ -16,10 +16,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Aleksey512/swarm-hpa/internal/app/taskerrors"
 	"github.com/Aleksey512/swarm-hpa/internal/config"
 	"github.com/Aleksey512/swarm-hpa/internal/core/compose"
 	"github.com/Aleksey512/swarm-hpa/internal/core/model"
 	"github.com/Aleksey512/swarm-hpa/internal/core/port"
+	coretaskerrors "github.com/Aleksey512/swarm-hpa/internal/core/taskerrors"
 )
 
 // TickSource produces the channel Run selects on, mirroring the reconciler seam
@@ -43,6 +45,24 @@ func WithTickSource(src TickSource) Option {
 // desired-vs-live replica drift gauges. Without it the drift gauges are skipped.
 func WithStackStateReader(r port.StackStateReader) Option {
 	return func(l *Loop) { l.state = r }
+}
+
+// WithTaskErrorTracker wires the shared task-error window (the same tracker the
+// reconciler feeds) so each successful deploy can schedule a post-deploy check
+// for the Swarm vxlan/network-sandbox task errors the old Docker bug produces.
+// checkDelay is how long to wait after a deploy before consulting the window
+// ( Swarm needs a moment to schedule tasks and record their failures); window
+// is the tracker window to consult (normally the same one the metrics exporter
+// reads). A nil tracker disables the check entirely.
+func WithTaskErrorTracker(tracker *taskerrors.Tracker, checkDelay, window time.Duration) Option {
+	return func(l *Loop) {
+		if tracker == nil {
+			return
+		}
+		l.errorTracker = tracker
+		l.checkDelay = checkDelay
+		l.errorWindow = window
+	}
 }
 
 // Loop is the GitOps stack-sync control loop.
@@ -79,6 +99,17 @@ type Loop struct {
 	concurrency int
 	repoMu      sync.Mutex
 	repoLocks   map[string]*sync.Mutex
+
+	// Post-deploy task-error check (optional; enabled via WithTaskErrorTracker).
+	// errorTracker is the SAME window the reconciler feeds; after each successful
+	// deploy the loop waits checkDelay, then alerts (ERROR log + recorder) when
+	// the window holds network-sandbox/vxlan errors for the deployed stack's
+	// services. A nil tracker disables the check.
+	errorTracker *taskerrors.Tracker
+	checkDelay   time.Duration
+	errorWindow  time.Duration
+	// checkClock is swappable for tests; production is the system clock.
+	checkClock func() time.Time
 }
 
 // New constructs the loop. sops decrypts secret files in place (nil disables
@@ -128,6 +159,7 @@ func New(
 		lastDesired:     make(map[string]map[string]uint64),
 		deployCount:     make(map[string]uint64),
 		repoLocks:       make(map[string]*sync.Mutex),
+		checkClock:      time.Now,
 	}
 	for _, opt := range opts {
 		opt(l)
@@ -437,6 +469,78 @@ func (l *Loop) syncStack(ctx context.Context, st model.StackConfig) {
 	deployed = true
 	log.Debug("gitops: all groups deployed", "groups", len(groups), "files", totalFiles)
 	log.Info("gitops: stack synced", "revision", rev, "groups", len(groups), "files", totalFiles)
+
+	l.schedulePostDeployCheck(ctx, st.Name)
+}
+
+// schedulePostDeployCheck arms the delayed network-error check after a
+// successful deploy: Swarm needs a moment to schedule the new tasks and record
+// their failures, so the check fires checkDelay later (bounded by the loop's
+// ctx — a shutdown cancels pending checks). The check reads the SHARED
+// task-error window the reconciler feeds and alerts when the deployed stack's
+// services hit the vxlan/network-sandbox bug. No-op when the tracker is not
+// wired.
+func (l *Loop) schedulePostDeployCheck(ctx context.Context, stack string) {
+	if l.errorTracker == nil {
+		return
+	}
+	delay := l.checkDelay
+	l.logger.Info("gitops: post-deploy error check scheduled",
+		"stack", stack, "delay", delay.String(), "window", l.errorWindow.String())
+	go func() {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			l.logger.Debug("gitops: post-deploy check cancelled", "stack", stack, "reason", ctx.Err())
+			return
+		case <-timer.C:
+		}
+		l.runPostDeployCheck(stack)
+	}()
+}
+
+// runPostDeployCheck consults the task-error window for the given stack. A
+// service belongs to the stack when its Swarm name carries the stack prefix —
+// the same namespace convention the deployer creates services under. Any
+// network-sandbox-join or vxlan error is alerted at ERROR (the line a log
+// pipeline should alert on) and recorded through the shared Recorder.
+func (l *Loop) runPostDeployCheck(stack string) {
+	snapshot := l.errorTracker.WindowSnapshot(l.checkClock(), l.errorWindow)
+	prefix := stack + "_"
+
+	type hit struct {
+		service string
+		class   string
+		count   int
+	}
+	var hits []hit
+	for service, classes := range snapshot {
+		if !strings.HasPrefix(service, prefix) {
+			continue // another stack's service
+		}
+		for class, n := range classes {
+			if class != string(coretaskerrors.ClassVxlanFileExists) &&
+				class != string(coretaskerrors.ClassNetworkSandboxJoin) {
+				continue
+			}
+			hits = append(hits, hit{service: service, class: class, count: n})
+		}
+	}
+	if len(hits) == 0 {
+		l.logger.Debug("gitops: post-deploy check clean", "stack", stack)
+		return
+	}
+
+	total := 0
+	for _, h := range hits {
+		total += h.count
+		l.recorder.StackTaskErrors(stack, h.service, h.class, h.count)
+		l.logger.Error("gitops deploy: network sandbox (vxlan) task errors detected",
+			"stack", stack, "service", h.service, "class", h.class, "count", h.count,
+			"hint", "old Docker networking bug; usually needs the service forced-updated or the node's stale sandbox cleaned")
+	}
+	l.recorder.DeployNetworkErrors(stack, total)
 }
 
 // renderedDoc is ONE rendered compose document, paired with the repo-relative

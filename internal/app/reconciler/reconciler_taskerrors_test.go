@@ -29,16 +29,19 @@ func (f fakeSwarmRead) AllServices(context.Context) ([]model.LiveService, error)
 }
 
 // newTaskErrorsReconciler wires a Reconciler with the task-error feature on.
-func newTaskErrorsReconciler(fc port.SwarmController, read port.SwarmRead, sink *apptaskerrors.Tracker) *Reconciler {
+// clk drives BOTH the reconciler and (by convention in the tests below) the
+// tracker, so window pruning sees the same instants the loop does.
+func newTaskErrorsReconciler(fc port.SwarmController, read port.SwarmRead, sink *apptaskerrors.Tracker, clk port.Clock) *Reconciler {
 	logger := discardLogger()
 	guard := NewGuard(fc, NewCooldown(port.SystemClock{}), Cooldowns{}, true, port.NopRecorder{}, logger)
-	return New(fc, fakeProvider{err: model.ErrNoMetricData}, guard, port.SystemClock{},
+	return New(fc, fakeProvider{err: model.ErrNoMetricData}, guard, clk,
 		testHealThreshold, port.NopRecorder{}, nil, 0, logger,
-		WithTaskErrors(sink, read))
+		WithTaskErrors(sink, read, 5*time.Minute))
 }
 
 func TestObserveTaskErrorsRecordsVxlan(t *testing.T) {
 	now := time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
+	clk := &fakeClock{now: now}
 	read := fakeSwarmRead{
 		tasks: []model.TaskView{
 			{ID: "t-ok", ServiceID: "s1", Slot: 1, State: "running", DesiredState: "running"},
@@ -50,8 +53,8 @@ func TestObserveTaskErrorsRecordsVxlan(t *testing.T) {
 			{ID: "s1", Name: "admin_analytics", StackNamespace: "admin"},
 		},
 	}
-	sink := apptaskerrors.NewTracker(port.SystemClock{}, discardLogger())
-	rec := newTaskErrorsReconciler(fakeController{services: []model.ManagedService{}}, read, sink)
+	sink := apptaskerrors.NewTracker(clk, discardLogger())
+	rec := newTaskErrorsReconciler(fakeController{services: []model.ManagedService{}}, read, sink, clk)
 
 	rec.observeTaskErrors(context.Background())
 
@@ -69,7 +72,7 @@ func TestObserveTaskErrorsCleanCluster(t *testing.T) {
 		tasks: []model.TaskView{{ID: "t1", ServiceID: "s1", State: "running", DesiredState: "running"}},
 	}
 	sink := apptaskerrors.NewTracker(port.SystemClock{}, discardLogger())
-	rec := newTaskErrorsReconciler(fakeController{}, read, sink)
+	rec := newTaskErrorsReconciler(fakeController{}, read, sink, port.SystemClock{})
 
 	rec.observeTaskErrors(context.Background())
 
@@ -82,7 +85,7 @@ func TestObserveTaskErrorsCleanCluster(t *testing.T) {
 func TestObserveTaskErrorsTaskListFailureDegrades(t *testing.T) {
 	read := fakeSwarmRead{tasksErr: errors.New("docker down")}
 	sink := apptaskerrors.NewTracker(port.SystemClock{}, discardLogger())
-	rec := newTaskErrorsReconciler(fakeController{}, read, sink)
+	rec := newTaskErrorsReconciler(fakeController{}, read, sink, port.SystemClock{})
 
 	// Must not panic; the tracker stays empty and the loop continues.
 	rec.observeTaskErrors(context.Background())
@@ -99,7 +102,7 @@ func TestObserveTaskErrorsServiceListFailureDegrades(t *testing.T) {
 		svcsErr: errors.New("docker down"),
 	}
 	sink := apptaskerrors.NewTracker(port.SystemClock{}, discardLogger())
-	rec := newTaskErrorsReconciler(fakeController{}, read, sink)
+	rec := newTaskErrorsReconciler(fakeController{}, read, sink, port.SystemClock{})
 
 	rec.observeTaskErrors(context.Background())
 

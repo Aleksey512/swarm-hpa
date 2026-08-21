@@ -56,6 +56,23 @@ type Recorder interface {
 	// StackReplicas records a stack service's desired (compose) vs live (Swarm)
 	// replica count, exposing GitOps drift as a metric in addition to /stacks.
 	StackReplicas(stack, service string, desired, live uint64)
+
+	// --- Task-error observability + orphan services (v0.9.0) ---
+
+	// StackTaskErrors records detected task errors attributed to a stack's
+	// service by class (core/taskerrors.Class values — a bounded set), for the
+	// post-deploy network-sandbox/vxlan alert. count is the windowed count.
+	StackTaskErrors(stack, service, class string, count int)
+	// DeployNetworkErrors records the total network-class task errors detected
+	// by a stack's post-deploy check (sum over services/classes).
+	DeployNetworkErrors(stack string, count int)
+	// TaskErrorsWindow records the current per-service, per-class task-error
+	// count inside the sliding window (0 deletes the series so stale services
+	// don't linger on the gauge).
+	TaskErrorsWindow(service, class string, count int)
+	// OrphanServices records the current orphan-service count from the /stacks
+	// on-demand scan.
+	OrphanServices(count int)
 }
 
 // NopRecorder is a Recorder that does nothing. It is the safe default when no
@@ -117,3 +134,17 @@ func (NopRecorder) ServiceCooldown(string, string, bool, float64) {}
 
 // StackReplicas does nothing.
 func (NopRecorder) StackReplicas(string, string, uint64, uint64) {}
+
+// --- Task-error observability + orphan services (v0.9.0) ---
+
+// StackTaskErrors does nothing.
+func (NopRecorder) StackTaskErrors(string, string, string, int) {}
+
+// DeployNetworkErrors does nothing.
+func (NopRecorder) DeployNetworkErrors(string, int) {}
+
+// TaskErrorsWindow does nothing.
+func (NopRecorder) TaskErrorsWindow(string, string, int) {}
+
+// OrphanServices does nothing.
+func (NopRecorder) OrphanServices(int) {}

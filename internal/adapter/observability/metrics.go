@@ -56,11 +56,23 @@ type Recorder struct {
 	stackDesiredReplicas *prometheus.GaugeVec
 	stackLiveReplicas    *prometheus.GaugeVec
 
+	// Task-error + orphan observability (v0.9.0).
+	taskErrorsWindow *prometheus.GaugeVec
+	stackTaskErrors  *prometheus.CounterVec
+	deployNetErrors  *prometheus.CounterVec
+	orphanServices   prometheus.Gauge
+
 	// lastDecisionState tracks the previous decision label per service so the
 	// stale series can be cleared when the decision changes (otherwise a service
 	// would show two simultaneous last_decision=1 labels).
 	lastDecisionMu    sync.Mutex
 	lastDecisionState map[string]string
+
+	// taskErrorsSeen tracks the (service,class) label sets currently present on
+	// the task-errors gauge so series that drop out of the window are deleted
+	// instead of lapping at their last value.
+	taskErrorsMu   sync.Mutex
+	taskErrorsSeen map[string]struct{}
 
 	logger *slog.Logger
 }
@@ -188,7 +200,25 @@ func NewRecorder(version string, logger *slog.Logger) *Recorder {
 			Help: "Live (Swarm) replica count for a stack service; differs from stack_desired_replicas when drift exists.",
 		}, []string{"stack", "service"}),
 
+		taskErrorsWindow: f.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: metricNamespace, Name: "task_errors_window",
+			Help: "Task status errors currently inside the sliding window, by service and bounded class (vxlan_file_exists|network_sandbox_join_failed|other).",
+		}, []string{"service", "class"}),
+		stackTaskErrors: f.NewCounterVec(prometheus.CounterOpts{
+			Namespace: metricNamespace, Name: "stack_task_errors_total",
+			Help: "Network-class task errors attributed to a stack service by the post-deploy check, by class.",
+		}, []string{"stack", "service", "class"}),
+		deployNetErrors: f.NewCounterVec(prometheus.CounterOpts{
+			Namespace: metricNamespace, Name: "deploy_network_errors_total",
+			Help: "Total network-class task errors detected by a stack's post-deploy check.",
+		}, []string{"stack"}),
+		orphanServices: f.NewGauge(prometheus.GaugeOpts{
+			Namespace: metricNamespace, Name: "orphan_services",
+			Help: "Live Swarm services in no configured stack and under no swarm.autoscaler.* management (on-demand /stacks scan).",
+		}),
+
 		lastDecisionState: map[string]string{},
+		taskErrorsSeen:    map[string]struct{}{},
 
 		logger: logger,
 	}
@@ -336,4 +366,46 @@ func (r *Recorder) ServiceCooldown(service, action string, inCooldown bool, rema
 func (r *Recorder) StackReplicas(stack, service string, desired, live uint64) {
 	r.stackDesiredReplicas.WithLabelValues(stack, service).Set(float64(desired))
 	r.stackLiveReplicas.WithLabelValues(stack, service).Set(float64(live))
+}
+
+// --- Task-error observability + orphan services (v0.9.0) ---
+
+// StackTaskErrors increments the per-stack, per-service, per-class counter of
+// network-class task errors found by the post-deploy check.
+func (r *Recorder) StackTaskErrors(stack, service, class string, count int) {
+	r.stackTaskErrors.WithLabelValues(stack, service, class).Add(float64(count))
+}
+
+// DeployNetworkErrors increments the per-stack total of network-class task
+// errors found by the post-deploy check.
+func (r *Recorder) DeployNetworkErrors(stack string, count int) {
+	r.deployNetErrors.WithLabelValues(stack).Add(float64(count))
+}
+
+// TaskErrorsWindow sets the windowed per-service, per-class error gauge. A
+// count of 0 deletes the series so services whose errors aged out of the
+// window (or vanished from Swarm) do not linger at their last value — the
+// same stale-series hygiene lastDecision applies to changed decisions.
+func (r *Recorder) TaskErrorsWindow(service, class string, count int) {
+	key := service + "\x00" + class
+
+	r.taskErrorsMu.Lock()
+	defer r.taskErrorsMu.Unlock()
+	if count <= 0 {
+		if _, seen := r.taskErrorsSeen[key]; seen {
+			r.taskErrorsWindow.DeleteLabelValues(service, class)
+			delete(r.taskErrorsSeen, key)
+			r.logger.Debug("observability: task error series removed",
+				"service", service, "class", class)
+		}
+		return
+	}
+	r.taskErrorsSeen[key] = struct{}{}
+	r.taskErrorsWindow.WithLabelValues(service, class).Set(float64(count))
+}
+
+// OrphanServices sets the current orphan-service count from the /stacks
+// on-demand scan.
+func (r *Recorder) OrphanServices(count int) {
+	r.orphanServices.Set(float64(count))
 }

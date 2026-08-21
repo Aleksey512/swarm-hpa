@@ -38,10 +38,12 @@ type Reconciler struct {
 
 	// Task-error observation (optional; enabled via WithTaskErrors). A nil
 	// errorSink disables the whole branch — the loop then never issues the
-	// cluster-wide AllTasks/AllServices reads. window is how long a recorded
-	// error stays in the sliding window (pruned by the sink's readers).
+	// cluster-wide AllTasks/AllServices reads. errWindow is how long a recorded
+	// error stays in the sliding window (also used for the per-tick gauge
+	// snapshot, so the metric and any alert read the same window).
 	errorSink *apptaskerrors.Tracker
 	errRead   port.SwarmRead
+	errWindow time.Duration
 }
 
 // New constructs a Reconciler. healThreshold is the minimum time a task must be
@@ -270,16 +272,27 @@ func (r *Reconciler) observeTaskErrors(ctx context.Context) {
 	}
 
 	events, byClass := joinTaskEvents(tasks, services)
+	if len(events) > 0 {
+		r.errorSink.Record(events)
+		r.logger.Info("task errors observed",
+			"erroring_tasks", len(events),
+			"vxlan_file_exists", byClass[coretaskerrors.ClassVxlanFileExists],
+			"network_sandbox_join_failed", byClass[coretaskerrors.ClassNetworkSandboxJoin],
+			"other", byClass[coretaskerrors.ClassOther])
+	}
+
+	// Publish the windowed per-service/class gauge every tick — including the
+	// zero-error case, so services whose errors aged out get their series
+	// deleted (see Recorder.TaskErrorsWindow) instead of lingering.
+	snapshot := r.errorSink.WindowSnapshot(r.clock.Now(), r.errWindow)
+	for service, classes := range snapshot {
+		for class, n := range classes {
+			r.recorder.TaskErrorsWindow(service, class, n)
+		}
+	}
 	if len(events) == 0 {
 		r.logger.Debug("task errors: none observed", "tasks_scanned", len(tasks))
-		return
 	}
-	r.errorSink.Record(events)
-	r.logger.Info("task errors observed",
-		"erroring_tasks", len(events),
-		"vxlan_file_exists", byClass[coretaskerrors.ClassVxlanFileExists],
-		"network_sandbox_join_failed", byClass[coretaskerrors.ClassNetworkSandboxJoin],
-		"other", byClass[coretaskerrors.ClassOther])
 }
 
 // joinTaskEvents maps erroring tasks to classified events, joining task
