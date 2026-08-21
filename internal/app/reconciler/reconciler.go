@@ -6,11 +6,13 @@ import (
 	"log/slog"
 	"time"
 
+	apptaskerrors "github.com/Aleksey512/swarm-hpa/internal/app/taskerrors"
 	"github.com/Aleksey512/swarm-hpa/internal/core/autoscaler"
 	"github.com/Aleksey512/swarm-hpa/internal/core/healer"
 	"github.com/Aleksey512/swarm-hpa/internal/core/model"
 	"github.com/Aleksey512/swarm-hpa/internal/core/port"
 	"github.com/Aleksey512/swarm-hpa/internal/core/rebalancer"
+	coretaskerrors "github.com/Aleksey512/swarm-hpa/internal/core/taskerrors"
 )
 
 // Reconciler runs the periodic control loop. It observes Swarm (read-only) and
@@ -33,6 +35,15 @@ type Reconciler struct {
 	// agent fleet is wired, which disables the rebalance branch entirely.
 	loads              LoadSource
 	rebalanceThreshold float64
+
+	// Task-error observation (optional; enabled via WithTaskErrors). A nil
+	// errorSink disables the whole branch — the loop then never issues the
+	// cluster-wide AllTasks/AllServices reads. errWindow is how long a recorded
+	// error stays in the sliding window (also used for the per-tick gauge
+	// snapshot, so the metric and any alert read the same window).
+	errorSink *apptaskerrors.Tracker
+	errRead   port.SwarmRead
+	errWindow time.Duration
 }
 
 // New constructs a Reconciler. healThreshold is the minimum time a task must be
@@ -125,6 +136,12 @@ func (r *Reconciler) observe(ctx context.Context) {
 		nodes = nil
 	}
 	now := r.clock.Now()
+
+	// Task-error observation — cluster-wide, once per tick, before the
+	// per-service loop. Pure observation: classify every erroring task and
+	// feed the sliding window the metrics exporter and the post-deploy GitOps
+	// alert read. A read failure degrades this feature for the tick only.
+	r.observeTaskErrors(ctx)
 
 	// tasksByNode collects rebalance-eligible services' tasks so the cluster-level
 	// rebalance decision (after the per-service loop) can find a task to move off a
@@ -229,6 +246,89 @@ func (r *Reconciler) observe(ctx context.Context) {
 	}
 
 	r.rebalance(ctx, services, tasksByNode, nodes)
+}
+
+// observeTaskErrors is the cluster-wide task-error observation pass: one
+// unfiltered TaskList, one unfiltered ServiceList (for the ServiceID→name
+// join), classify every task carrying a status error, and record the events
+// in the sliding-window tracker. It is a no-op when the feature is not wired,
+// and a WARN (never a crash) when the reads fail — the loop's resilience
+// contract.
+func (r *Reconciler) observeTaskErrors(ctx context.Context) {
+	if r.errorSink == nil || r.errRead == nil {
+		return
+	}
+	tasks, err := r.errRead.AllTasks(ctx)
+	if err != nil {
+		r.logger.Warn("task errors: cluster task list failed; skipping this tick", "err", err)
+		r.recorder.Error("tasks")
+		return
+	}
+	services, err := r.errRead.AllServices(ctx)
+	if err != nil {
+		r.logger.Warn("task errors: cluster service list failed; skipping this tick", "err", err)
+		r.recorder.Error("services")
+		return
+	}
+
+	events, byClass := joinTaskEvents(tasks, services)
+	if len(events) > 0 {
+		r.errorSink.Record(events)
+		r.logger.Info("task errors observed",
+			"erroring_tasks", len(events),
+			"vxlan_file_exists", byClass[coretaskerrors.ClassVxlanFileExists],
+			"network_sandbox_join_failed", byClass[coretaskerrors.ClassNetworkSandboxJoin],
+			"other", byClass[coretaskerrors.ClassOther])
+	}
+
+	// Publish the windowed per-service/class gauge every tick — including the
+	// zero-error case, so services whose errors aged out get their series
+	// deleted (see Recorder.TaskErrorsWindow) instead of lingering.
+	snapshot := r.errorSink.WindowSnapshot(r.clock.Now(), r.errWindow)
+	for service, classes := range snapshot {
+		for class, n := range classes {
+			r.recorder.TaskErrorsWindow(service, class, n)
+		}
+	}
+	if len(events) == 0 {
+		r.logger.Debug("task errors: none observed", "tasks_scanned", len(tasks))
+	}
+}
+
+// joinTaskEvents maps erroring tasks to classified events, joining task
+// ServiceIDs to service names via the cluster-wide service listing (one map
+// build — no per-task API calls). A task whose service vanished from the
+// listing keeps the raw ServiceID as its name: its window entry is about to
+// age out anyway, and dropping it would hide a just-deleted service's errors.
+func joinTaskEvents(tasks []model.TaskView, services []model.LiveService) ([]model.TaskErrorEvent, map[coretaskerrors.Class]int) {
+	idToName := make(map[string]string, len(services))
+	for _, svc := range services {
+		idToName[svc.ID] = svc.Name
+	}
+
+	var events []model.TaskErrorEvent
+	byClass := make(map[coretaskerrors.Class]int)
+	for _, t := range tasks {
+		if t.Err == "" {
+			continue
+		}
+		name := t.ServiceID
+		if n, ok := idToName[t.ServiceID]; ok {
+			name = n
+		}
+		class := coretaskerrors.Classify(t.Err)
+		byClass[class]++
+		events = append(events, model.TaskErrorEvent{
+			ServiceID:   t.ServiceID,
+			ServiceName: name,
+			Slot:        t.Slot,
+			TaskID:      t.ID,
+			Class:       string(class),
+			Since:       t.Since,
+			Err:         t.Err,
+		})
+	}
+	return events, byClass
 }
 
 // rebalance runs the cluster-level, load-aware rebalance decision once per tick

@@ -22,6 +22,9 @@
     small { color: #888; }
     a { color: #0969da; }
     .summary { color: #555; margin: .25rem 0 0; }
+    .orphan { color: #9a6700; font-weight: 600; }
+    details { margin-top: 1.5rem; }
+    details > summary { cursor: pointer; font-weight: 600; }
   </style>
 </head>
 <body>
@@ -33,6 +36,8 @@
     syncing: <span class="syncing">{{.Summary.Syncing}}</span> ·
     waiting: <span class="waiting">{{.Summary.Waiting}}</span>
     {{if .Summary.Concurrency}} · concurrency: {{.Summary.Concurrency}} → ≤{{.Summary.MaxParallel}} parallel{{end}}
+    {{if .Summary.OrphansFail}} · orphans: <span class="err">unavailable</span>
+    {{else if .Summary.Orphans}} · orphans: <span class="orphan">{{.Summary.Orphans}}</span>{{end}}
   </p>
   {{if not .Stacks}}
   <p><small>No stacks synced yet.</small></p>
@@ -73,6 +78,33 @@
     </tr>
     {{end}}
   </table>
+  {{end}}
+  {{if .OrphansError}}
+  <details>
+    <summary>Orphan services <span class="err">— scan failed</span></summary>
+    <p class="err">{{.OrphansError}}</p>
+  </details>
+  {{else if .Orphans}}
+  <details>
+    <summary>Orphan services <span class="orphan">({{.Summary.Orphans}})</span></summary>
+    <p><small>Live Swarm services that no configured stack declares and the autoscaler does not manage — candidates for <code>docker service rm</code> or adoption into a stack.</small></p>
+    <table>
+      <tr><th>service</th><th>claimed namespace</th><th>hint</th></tr>
+      {{range .Orphans}}
+      <tr>
+        <td><code>{{.Name}}</code></td>
+        <td>{{if .Namespace}}<code>{{.Namespace}}</code>{{else}}<small>—</small>{{end}}</td>
+        <td>{{if .Namespace}}stack <code>{{.Namespace}}</code> is not in stacks.yaml{{else}}created outside any stack{{end}}</td>
+      </tr>
+      {{end}}
+    </table>
+  </details>
+  {{else if .Summary.OrphansFail}}
+  {{else if .Stacks}}
+  <details>
+    <summary>Orphan services <span class="ok">(0)</span></summary>
+    <p><small>No orphan services — every live service belongs to a configured stack or the autoscaler.</small></p>
+  </details>
   {{end}}
 </body>
 </html>

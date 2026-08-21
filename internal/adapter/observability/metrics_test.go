@@ -158,3 +158,56 @@ func TestRecorderHandlerExposition(t *testing.T) {
 		}
 	}
 }
+
+// TestRecorderTaskErrorAndOrphanMetrics asserts the v0.9.0 task-error and
+// orphan metrics: values, labels, and the stale-series deletion when a
+// (service,class) drops out of the window.
+func TestRecorderTaskErrorAndOrphanMetrics(t *testing.T) {
+	r := NewRecorder("1.0.0", discardLogger())
+
+	r.TaskErrorsWindow("web", "vxlan_file_exists", 2)
+	r.TaskErrorsWindow("web", "other", 1)
+	r.OrphanServices(4)
+	r.StackTaskErrors("admin", "admin_web", "vxlan_file_exists", 2)
+	r.DeployNetworkErrors("admin", 2)
+
+	if got := testutil.ToFloat64(r.taskErrorsWindow.WithLabelValues("web", "vxlan_file_exists")); got != 2 {
+		t.Errorf("task_errors_window{web,vxlan} = %v, want 2", got)
+	}
+	if got := testutil.ToFloat64(r.taskErrorsWindow.WithLabelValues("web", "other")); got != 1 {
+		t.Errorf("task_errors_window{web,other} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(r.orphanServices); got != 4 {
+		t.Errorf("orphan_services = %v, want 4", got)
+	}
+	if got := testutil.ToFloat64(r.stackTaskErrors.WithLabelValues("admin", "admin_web", "vxlan_file_exists")); got != 2 {
+		t.Errorf("stack_task_errors_total = %v, want 2", got)
+	}
+	if got := testutil.ToFloat64(r.deployNetErrors.WithLabelValues("admin")); got != 2 {
+		t.Errorf("deploy_network_errors_total = %v, want 2", got)
+	}
+
+	// Dropping to 0 must DELETE the series, not leave it lapping at the last
+	// value (testutil.ToFloat64 panics on a deleted series — the intended
+	// signal — so assert via the collected exposition instead).
+	r.TaskErrorsWindow("web", "other", 0)
+	families, err := r.registry.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	found := false
+	for _, mf := range families {
+		if mf.GetName() != "swarm_hpa_task_errors_window" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			labels := m.GetLabel()
+			if len(labels) == 2 && labels[0].GetValue() == "web" && labels[1].GetValue() == "other" {
+				found = true
+			}
+		}
+	}
+	if found {
+		t.Error("task_errors_window{web,other} must be deleted after dropping to 0")
+	}
+}

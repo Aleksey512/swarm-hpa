@@ -94,3 +94,19 @@ type StackService struct {
 	Replicated bool
 	Labels     map[string]string
 }
+
+// LiveService is the read-only projection of one Swarm service from an
+// unfiltered, cluster-wide service listing. Unlike StackService (scoped to one
+// stack, short name), it carries the full Swarm service name and the raw stack
+// namespace label so orphan detection can attribute every live service to a
+// stack — or to none.
+type LiveService struct {
+	ID   string
+	Name string // full Swarm service name (e.g. <stack>_<service>)
+	// StackNamespace is the value of the com.docker.stack.namespace label —
+	// the authoritative stack attribution `docker stack deploy` stamps on
+	// every service it creates. Empty for services created outside any stack
+	// (e.g. bare `docker service create`).
+	StackNamespace string
+	Labels         map[string]string
+}

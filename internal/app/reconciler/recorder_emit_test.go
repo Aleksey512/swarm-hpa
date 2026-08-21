@@ -259,3 +259,8 @@ func TestReconcilerEmitsDecisionPendingCooldown(t *testing.T) {
 		})
 	}
 }
+
+func (f *fakeRecorder) StackTaskErrors(string, string, string, int) {}
+func (f *fakeRecorder) DeployNetworkErrors(string, int)             {}
+func (f *fakeRecorder) TaskErrorsWindow(string, string, int)        {}
+func (f *fakeRecorder) OrphanServices(int)                          {}

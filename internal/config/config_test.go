@@ -752,3 +752,73 @@ func TestLoadGitOps_ComposeFileShapes(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadArgsTaskErrorsWindow(t *testing.T) {
+	// default is 5m
+	c, err := LoadArgs(nil, fakeEnv(nil))
+	if err != nil || c.TaskErrorsWindow != 5*time.Minute {
+		t.Fatalf("default window: err=%v got=%s want=5m", err, c.TaskErrorsWindow)
+	}
+	// env overrides default
+	c, err = LoadArgs(nil, fakeEnv(map[string]string{"TASK_ERRORS_WINDOW": "10m"}))
+	if err != nil || c.TaskErrorsWindow != 10*time.Minute {
+		t.Fatalf("env window=10m: err=%v got=%s", err, c.TaskErrorsWindow)
+	}
+	// flag overrides env
+	c, err = LoadArgs([]string{"--task-errors-window=1m"}, fakeEnv(map[string]string{"TASK_ERRORS_WINDOW": "10m"}))
+	if err != nil || c.TaskErrorsWindow != time.Minute {
+		t.Fatalf("flag window=1m: err=%v got=%s", err, c.TaskErrorsWindow)
+	}
+	// malformed env is rejected
+	if _, err := LoadArgs(nil, fakeEnv(map[string]string{"TASK_ERRORS_WINDOW": "soon"})); err == nil {
+		t.Fatal("malformed TASK_ERRORS_WINDOW must be rejected")
+	}
+	// negative is rejected by Validate
+	if _, err := LoadArgs([]string{"--task-errors-window=-1m"}, fakeEnv(nil)); err == nil {
+		t.Fatal("negative task_errors_window must be rejected")
+	}
+}
+
+func TestLoadArgsDeployCheckDelay(t *testing.T) {
+	// default is 90s
+	c, err := LoadArgs(nil, fakeEnv(nil))
+	if err != nil || c.DeployCheckDelay != 90*time.Second {
+		t.Fatalf("default delay: err=%v got=%s want=90s", err, c.DeployCheckDelay)
+	}
+	// env overrides default
+	c, err = LoadArgs(nil, fakeEnv(map[string]string{"DEPLOY_CHECK_DELAY": "2m"}))
+	if err != nil || c.DeployCheckDelay != 2*time.Minute {
+		t.Fatalf("env delay=2m: err=%v got=%s", err, c.DeployCheckDelay)
+	}
+	// flag overrides env
+	c, err = LoadArgs([]string{"--deploy-check-delay=30s"}, fakeEnv(map[string]string{"DEPLOY_CHECK_DELAY": "2m"}))
+	if err != nil || c.DeployCheckDelay != 30*time.Second {
+		t.Fatalf("flag delay=30s: err=%v got=%s", err, c.DeployCheckDelay)
+	}
+	// negative is rejected
+	if _, err := LoadArgs([]string{"--deploy-check-delay=-5s"}, fakeEnv(nil)); err == nil {
+		t.Fatal("negative deploy_check_delay must be rejected")
+	}
+}
+
+func TestLoadArgsOrphansScan(t *testing.T) {
+	// default is on (read-only surface)
+	c, err := LoadArgs(nil, fakeEnv(nil))
+	if err != nil || !c.OrphansScan {
+		t.Fatalf("default orphans_scan: err=%v got=%v want=true", err, c.OrphansScan)
+	}
+	// env disables
+	c, err = LoadArgs(nil, fakeEnv(map[string]string{"ORPHANS_SCAN": "false"}))
+	if err != nil || c.OrphansScan {
+		t.Fatalf("env orphans_scan=false: err=%v got=%v", err, c.OrphansScan)
+	}
+	// flag re-enables over env
+	c, err = LoadArgs([]string{"--orphans-scan=true"}, fakeEnv(map[string]string{"ORPHANS_SCAN": "false"}))
+	if err != nil || !c.OrphansScan {
+		t.Fatalf("flag orphans_scan=true: err=%v got=%v", err, c.OrphansScan)
+	}
+	// malformed env is rejected
+	if _, err := LoadArgs(nil, fakeEnv(map[string]string{"ORPHANS_SCAN": "maybe"})); err == nil {
+		t.Fatal("malformed ORPHANS_SCAN must be rejected")
+	}
+}

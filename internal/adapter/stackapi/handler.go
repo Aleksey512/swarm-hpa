@@ -36,6 +36,9 @@ var _ http.Handler = (*Handler)(nil)
 type Handler struct {
 	store       port.StackStatusStore
 	live        port.StackStateReader
+	reader      port.SwarmRead // optional: cluster-wide reads for orphan detection
+	stackNames  []string       // configured stack names (stacks.yaml); nil ⇒ no orphan scan
+	recorder    port.Recorder  // optional: publishes the orphan count as a metric
 	logger      *slog.Logger
 	concurrency int // configured --gitops-concurrency; 0 ⇒ hide the cap in the UI summary
 }
@@ -49,6 +52,25 @@ func New(store port.StackStatusStore, live port.StackStateReader, logger *slog.L
 		logger = slog.Default()
 	}
 	return &Handler{store: store, live: live, logger: logger, concurrency: concurrency}
+}
+
+// WithOrphanScan enables the orphan-services section: live Swarm services that
+// belong to no configured stack and carry no swarm.autoscaler.* labels. The
+// scan runs on demand per request (like drift), reading the cluster-wide
+// service listing through reader. A nil reader or empty stack names disables
+// it. recorder (optional, nil-safe) publishes the orphan count as the
+// swarm_hpa_orphan_services gauge on every successful scan. Returns the
+// receiver for chaining at the composition root.
+func (h *Handler) WithOrphanScan(reader port.SwarmRead, stackNames []string, recorder port.Recorder) *Handler {
+	if reader == nil || len(stackNames) == 0 {
+		return h
+	}
+	h.reader = reader
+	h.stackNames = stackNames
+	if recorder != nil {
+		h.recorder = recorder
+	}
+	return h
 }
 
 // ServeHTTP routes GET /stacks (JSON), GET / and /ui (HTML); 404 otherwise, 405
@@ -91,19 +113,36 @@ func (h *Handler) serveUI(w http.ResponseWriter, _ *http.Request) {
 type payload struct {
 	Stacks  []stackResponse `json:"stacks"`
 	Summary uiSummary       `json:"summary"`
+	// Orphans are live services in no configured stack and under no
+	// swarm.autoscaler.* management (on-demand scan; omitted when the scan
+	// is not wired). OrphansError carries a read failure instead.
+	Orphans      []orphanItem `json:"orphans,omitempty"`
+	OrphansError string       `json:"orphans_error,omitempty"`
+}
+
+// orphanItem is the JSON shape for one orphan service.
+type orphanItem struct {
+	Name string `json:"name"`
+	// Namespace is the stack namespace the service claims — a stack name that
+	// is not in stacks.yaml (empty when the service was created outside any
+	// stack, e.g. bare `docker service create`).
+	Namespace string `json:"namespace,omitempty"`
 }
 
 // uiSummary is the one-line aggregate above the table. Syncing/Waiting are the
 // counts of stacks currently in those live states (a Snapshot during a sync pass
 // catches one instant). MaxParallel is min(concurrency, distinct repos); 0 when
-// concurrency is not wired (GitOps off).
+// concurrency is not wired (GitOps off). Orphans is the orphan-services count
+// from the on-demand scan (-1 when the scan failed, so the UI can say so).
 type uiSummary struct {
-	Stacks      int `json:"stacks"`
-	Repos       int `json:"repos"`
-	Syncing     int `json:"syncing"`
-	Waiting     int `json:"waiting"`
-	Concurrency int `json:"concurrency,omitempty"`
-	MaxParallel int `json:"max_parallel,omitempty"`
+	Stacks      int  `json:"stacks"`
+	Repos       int  `json:"repos"`
+	Syncing     int  `json:"syncing"`
+	Waiting     int  `json:"waiting"`
+	Orphans     int  `json:"orphans"`
+	OrphansFail bool `json:"orphans_fail,omitempty"`
+	Concurrency int  `json:"concurrency,omitempty"`
+	MaxParallel int  `json:"max_parallel,omitempty"`
 }
 
 // buildPayload joins stored status with fresh on-demand drift and folds in the
@@ -169,7 +208,44 @@ func (h *Handler) buildPayload() payload {
 			sum.MaxParallel = len(repos)
 		}
 	}
-	return payload{Stacks: out, Summary: sum}
+
+	p := payload{Stacks: out, Summary: sum}
+	h.scanOrphans(&p)
+	return p
+}
+
+// scanOrphans fills the orphan section of the payload: one cluster-wide
+// service read, then the pure stackstatus.Orphans rule against the configured
+// stack names. Like drift, a read failure degrades to an error note instead of
+// failing the response. A no-op when the scan is not wired.
+func (h *Handler) scanOrphans(p *payload) {
+	if h.reader == nil {
+		return
+	}
+	started := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), liveTimeout)
+	services, err := h.reader.AllServices(ctx)
+	cancel()
+	if err != nil {
+		h.logger.Warn("stackapi: orphan scan failed", "err", err)
+		p.OrphansError = err.Error()
+		p.Summary.OrphansFail = true
+		return
+	}
+
+	found := stackstatus.Orphans(h.stackNames, services)
+	items := make([]orphanItem, 0, len(found))
+	for _, svc := range found {
+		items = append(items, orphanItem{Name: svc.Name, Namespace: svc.StackNamespace})
+	}
+	p.Orphans = items
+	p.Summary.Orphans = len(items)
+	if h.recorder != nil {
+		h.recorder.OrphanServices(len(items))
+	}
+	h.logger.Debug("stackapi: orphan scan done",
+		"orphans", len(items), "services_scanned", len(services),
+		"took", time.Since(started).String())
 }
 
 // stackResponse is the JSON shape for one stack.

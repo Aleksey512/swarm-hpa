@@ -65,6 +65,30 @@ Per-stack GitOps drift (manager, when GitOps is enabled):
 The `service`/`action`/`decision`/`stack` labels are bounded to the configured
 sets, so cardinality stays low.
 
+### Task-error & orphan series (v0.9.0)
+
+These classify Swarm **task status errors** into a bounded set of classes and
+surface services that belong to no configured stack. The headline target is
+the old Docker networking bug where a post-deploy task is rejected with
+`network sandbox join failed … error creating vxlan interface: file exists`.
+
+| Metric | Type | Labels | Meaning |
+|--------|------|--------|---------|
+| `swarm_hpa_task_errors_window` | gauge | `service`, `class` | Task errors currently inside the sliding window (default 5m, `--task-errors-window`). `class`: `vxlan_file_exists`\|`network_sandbox_join_failed`\|`other`. A series is deleted when its count leaves the window. |
+| `swarm_hpa_stack_task_errors_total` | counter | `stack`, `service`, `class` | Network-class errors attributed to a stack's services by the post-deploy check. |
+| `swarm_hpa_deploy_network_errors_total` | counter | `stack` | Total network-class errors found by a stack's post-deploy check. |
+| `swarm_hpa_orphan_services` | gauge | — | Live services in no configured stack and under no `swarm.autoscaler.*` management, from the on-demand `/stacks` scan. |
+
+Error classes are a **bounded set** — raw Docker error text is never a metric
+label (cardinality discipline). The reconciler scans the cluster's tasks once
+per tick (unfiltered, so superseded/rejected tasks are included) and records
+each error deduplicated per task instance; the same window feeds the gauge,
+the `/stacks` UI and the GitOps post-deploy alert. After every successful
+stack deploy the GitOps loop waits `--deploy-check-delay` (default 90s) and
+then logs at **ERROR** (`gitops deploy: network sandbox (vxlan) task errors
+detected`) if the deployed stack's services hit the bug — alertable by any
+log pipeline without Prometheus.
+
 ### Agent-fleet series (manager)
 
 Populated on the manager as [agents](agents-and-rebalancing.md) report in. The
@@ -124,6 +148,9 @@ scrape_configs:
 | Desired vs current gap | `swarm_hpa_desired_replicas - swarm_hpa_current_replicas` |
 | Services currently in cooldown | `swarm_hpa_in_cooldown == 1` |
 | GitOps drift per stack service | `swarm_hpa_stack_desired_replicas - swarm_hpa_stack_live_replicas` |
+| Vxlan (sandbox-join) errors right after deploys | `sum(swarm_hpa_task_errors_window{class=~"vxlan_file_exists\|network_sandbox_join_failed"}) > 0` |
+| Post-deploy network errors per stack | `increase(swarm_hpa_deploy_network_errors_total[10m]) > 0` |
+| Orphan services present | `swarm_hpa_orphan_services > 0` |
 
 > Tip: while `--dry-run` is enabled (the default), real actions are zero and the
 > `actions_suppressed_total{reason="dry_run"}` series shows what *would* have

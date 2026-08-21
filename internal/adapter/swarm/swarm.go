@@ -40,6 +40,7 @@ type Adapter struct {
 var (
 	_ port.SwarmController  = (*Adapter)(nil)
 	_ port.StackStateReader = (*Adapter)(nil)
+	_ port.SwarmRead        = (*Adapter)(nil)
 )
 
 // New returns a read-only swarm adapter over the given Docker client.
@@ -154,6 +155,60 @@ func (a *Adapter) Nodes(ctx context.Context) ([]model.NodeView, error) {
 // service of a stack, used to scope a live-services read to one stack.
 const stackNamespaceLabel = "com.docker.stack.namespace"
 
+// AllTasks returns every task in the cluster with NO filters. Deliberately
+// unfiltered: the per-service Tasks read keeps only desired-state=running
+// tasks, which hides superseded/rejected tasks — exactly the ones whose
+// status errors (e.g. the vxlan sandbox-join bug) the error monitor needs.
+// Implements port.SwarmRead.
+func (a *Adapter) AllTasks(ctx context.Context) ([]model.TaskView, error) {
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+
+	tasks, err := a.cli.TaskList(ctx, dswarm.TaskListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("task list (all): %w", err)
+	}
+
+	views := make([]model.TaskView, 0, len(tasks))
+	for _, t := range tasks {
+		views = append(views, toTaskView(t))
+	}
+	a.logger.Debug("all tasks observed", "count", len(views))
+	return views, nil
+}
+
+// AllServices returns every service in the cluster with NO label filters —
+// the cluster-wide view orphan detection diffs against the configured stacks.
+// Implements port.SwarmRead.
+func (a *Adapter) AllServices(ctx context.Context) ([]model.LiveService, error) {
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+
+	services, err := a.cli.ServiceList(ctx, dswarm.ServiceListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("service list (all): %w", err)
+	}
+
+	out := make([]model.LiveService, 0, len(services))
+	for _, svc := range services {
+		out = append(out, toLiveService(svc))
+	}
+	a.logger.Debug("all services observed", "count", len(out))
+	return out, nil
+}
+
+// toLiveService maps an SDK service to a model.LiveService (pure). The stack
+// namespace label — stamped by `docker stack deploy` — is the authoritative
+// stack attribution; empty for services created outside any stack.
+func toLiveService(svc dswarm.Service) model.LiveService {
+	return model.LiveService{
+		ID:             svc.ID,
+		Name:           svc.Spec.Name,
+		StackNamespace: svc.Spec.Labels[stackNamespaceLabel],
+		Labels:         svc.Spec.Labels,
+	}
+}
+
 // StackServices returns the live Swarm services of a stack (by the
 // com.docker.stack.namespace label) for autoscaler-aware carry-forward. It
 // implements port.StackStateReader. Name is the short compose service name
@@ -233,6 +288,7 @@ func toTaskView(t dswarm.Task) model.TaskView {
 	return model.TaskView{
 		ID:           t.ID,
 		ServiceID:    t.ServiceID,
+		Slot:         t.Slot,
 		State:        string(t.Status.State),
 		DesiredState: string(t.DesiredState),
 		NodeID:       t.NodeID,
